@@ -21,7 +21,7 @@ SECRET_KEY = config('SECRET_KEY', default='your-secret-key-here-change-in-produc
 DEBUG = False
 # DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='gadgethub-api-vdcs.onrender.com').split(',')
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,gadgethub-api-vdcs.onrender.com').split(',')
 
 # Application definition
 INSTALLED_APPS = [
