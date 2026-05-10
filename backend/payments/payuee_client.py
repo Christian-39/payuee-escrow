@@ -143,6 +143,49 @@ class PayueeClient:
         }
         return self.make_request('POST', '/v1/products', data)
 
+    # ─────────────────────────────────────────────────────────────
+    # WALLET METHODS
+    # ─────────────────────────────────────────────────────────────
+
+    def get_wallet_balance(self) -> Dict[str, Any]:
+        """
+        Retrieve the current balance of your Payuee Enterprise Wallet.
+        
+        Returns wallet balance in the smallest currency unit (kobo for NGN).
+        Always convert before displaying to end users.
+        
+        Response format:
+            {
+                "status": "success",
+                "wallet_balance": 250000,
+                "currency": "NGN"
+            }
+        """
+        return self.make_request('GET', '/v1/wallet/balance')
+
+    def get_wallet_funding_details(self) -> Dict[str, Any]:
+        """
+        Retrieve your Payuee Enterprise Wallet funding details.
+        
+        Returns a dedicated virtual account assigned to your business.
+        You can transfer funds directly to this account from your business bank.
+        A webhook notification will be sent after successful wallet funding.
+        
+        Response format:
+            {
+                "wallet_funding_account": {
+                    "account_name": "PAYUEE NETWORK LIMITED",
+                    "account_number": "1385097053",
+                    "bank_name": "Paga Bank",
+                    "bank_code": "100002"
+                },
+                "wallet_balance": 250000
+            }
+        """
+        return self.make_request('GET', '/v1/wallet/funding-details')
+
+    # ─────────────────────────────────────────────────────────────
+
     def create_order(self, order, cart_items, eshop_id: str) -> Dict[str, Any]:
         """Create order in Payuee escrow system."""
         try:
