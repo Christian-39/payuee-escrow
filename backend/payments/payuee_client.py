@@ -138,7 +138,7 @@ class PayueeClient:
             "max_price": 100000,
             "min_weight": 0,
             "max_weight": 50,
-            "page_number": 15,
+            "page_number": 5,
             "sort_option": 7
         }
         return self.make_request('POST', '/v1/products', data)
