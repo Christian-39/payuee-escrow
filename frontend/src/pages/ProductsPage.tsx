@@ -19,7 +19,7 @@ const sortOptions = [
   { value: '-average_rating', label: 'Highest Rated' },
   { value: 'name', label: 'Name: A-Z' },
 ];
-const BASE_URL = import.meta.env.VITE_API_URL || 'https://gadgethub-api-vdcs.onrender.com/api';
+const BASE_URL = import.meta.env.VITE_API_URL || '';
 export default function ProductsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [products, setProducts] = useState<ProductListItem[]>([]);
