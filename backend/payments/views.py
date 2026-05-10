@@ -132,3 +132,17 @@ class AdminTransactionDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAdminUser]
     queryset = Transaction.objects.all().select_related('user', 'order')
     lookup_field = 'id'
+
+
+import logging
+logger = logging.getLogger(__name__)
+
+@api_view(['GET'])
+def products_list(request):
+    client = get_payuee_client()
+    result = client.get_store_products()
+    
+    logger.info(f"Payuee result: {result}")  # Check your Django logs
+    
+    # Return raw for debugging
+    return Response(result)

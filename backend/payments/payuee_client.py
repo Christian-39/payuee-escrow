@@ -18,8 +18,8 @@ class PayueeClient:
     """Client for Payuee Escrow API."""
 
     def __init__(self):
-        self.api_key = settings.PAYUEE_PUBLIC_KEY
-        self.api_secret = settings.PAYUEE_SECRET_KEY
+        self.api_key = settings.PAYUEE_API_KEY.strip()
+        self.api_secret = settings.PAYUEE_API_SECRET.strip()
         self.base_url = getattr(settings, 'PAYUEE_BASE_URL', 'https://escrow.payuee.com')
 
         if not all([self.api_key, self.api_secret, self.base_url]):
@@ -130,10 +130,10 @@ class PayueeClient:
     def get_store_products(self) -> Dict[str, Any]:
         """Fetch products from Payuee store."""
         data = {
-            "category": "all",  # Valid category from docs
-            "user_lat": 6.5244,     # Lagos coordinates (example)
+            "category": "all",  # or "all", "outfits", etc.
+            "user_lat": 6.5244,
             "user_lon": 3.3792,
-            "max_distance": 100,
+            "max_distance": 10000,
             "min_price": 0,
             "max_price": 100000,
             "min_weight": 0,
@@ -141,7 +141,36 @@ class PayueeClient:
             "page_number": 1,
             "sort_option": 7
         }
-        return self.make_request('POST', '/v1/get-store-products', data)
+        
+        import uuid
+        idempotency_key = str(uuid.uuid4())
+        
+        # CORRECT: POST to /v1/products (documented endpoint)
+        result = self.make_request(
+            'POST', 
+            '/v1/products', 
+            data, 
+            idempotency_key=idempotency_key
+        )
+        
+        logger.info(f"Payuee raw response: {result}")
+        
+        if result.get('success') and result.get('data'):
+            api_data = result['data']
+            
+            # The response structure from docs:
+            # { "pagination": {...}, "stores": [...], "success": [...] }
+            transformed = {
+                'count': api_data.get('pagination', {}).get('AllRecords', 0),
+                'next': api_data.get('pagination', {}).get('NextPage'),
+                'previous': api_data.get('pagination', {}).get('PreviousPage'),
+                'results': api_data.get('success', []),
+                'stores': api_data.get('stores', []),
+                'pagination': api_data.get('pagination', {})
+            }
+            return {'success': True, 'data': transformed}
+        
+        return result
 
     def create_order(self, order, cart_items, eshop_id: str) -> Dict[str, Any]:
         """Create order in Payuee escrow system."""
@@ -161,8 +190,9 @@ class PayueeClient:
                 'customer_name': (order.user.full_name or order.user.email)[:100],
                 'customer_phone': (order.shipping_phone or '')[:20],
                 'delivery_address': f"{order.shipping_address}, {order.shipping_city}, {order.shipping_state}, {order.shipping_country}"[:200],
-                'reference': order.order_number[:50]
-            }
+                'reference': order.order_number[:50],
+                'webhook_response_url': getattr(settings, 'PAYUEE_WEBHOOK_URL', 'https://yourdomain.com/webhooks/payuee/'),
+        }
 
             result = self.make_request(
                 'POST',
