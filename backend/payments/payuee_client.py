@@ -133,7 +133,7 @@ class PayueeClient:
             "category": "all",  # or "all", "outfits", etc.
             "user_lat": 6.5244,
             "user_lon": 3.3792,
-            "max_distance": 10000,
+            "max_distance": 10,
             "min_price": 0,
             "max_price": 100000,
             "min_weight": 0,
