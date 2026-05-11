@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Wallet,
   ArrowUpRight,
@@ -21,6 +21,13 @@ import {
   Eye,
   EyeOff,
   Banknote,
+  CheckCircle2,
+  X,
+  Info,
+  ArrowRight,
+  Building2,
+  Smartphone,
+  Mail,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import api from '../lib/api';
@@ -74,6 +81,7 @@ export default function WalletPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showBalance, setShowBalance] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'transactions'>('overview');
+  const [showFundingModal, setShowFundingModal] = useState(false);
 
   useEffect(() => {
     fetchWalletData();
@@ -83,7 +91,6 @@ export default function WalletPage() {
     try {
       setIsLoading(true);
 
-      // Fetch balance, funding details, and transactions in parallel
       const [balanceRes, fundingRes, walletTxRes, txRes] = await Promise.allSettled([
         api.get('/payments/wallet/balance/'),
         api.get('/payments/wallet/funding-details/'),
@@ -177,6 +184,8 @@ export default function WalletPage() {
     }
   };
 
+  const account = fundingDetails?.wallet_funding_account;
+
   if (!user) {
     return (
       <div className="text-center py-16">
@@ -204,14 +213,16 @@ export default function WalletPage() {
             Manage your Payuee escrow wallet
           </p>
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={isRefreshing}
-          className="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-          <span className="text-sm font-medium">Refresh</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span className="text-sm font-medium">Refresh</span>
+          </button>
+        </div>
       </motion.div>
 
       {/* Balance Card */}
@@ -255,10 +266,17 @@ export default function WalletPage() {
                 </div>
               </div>
             </div>
-            <div className="hidden sm:block">
+            <div className="hidden sm:flex flex-col items-end gap-2">
               <span className="px-3 py-1.5 bg-green-400/20 text-green-300 text-sm font-medium rounded-full backdrop-blur-sm">
                 Active
               </span>
+              <button
+                onClick={() => setShowFundingModal(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-white/20 backdrop-blur-sm rounded-xl text-white text-sm font-medium hover:bg-white/30 transition-colors"
+              >
+                <Banknote className="w-4 h-4" />
+                Fund Wallet
+              </button>
             </div>
           </div>
 
@@ -305,6 +323,17 @@ export default function WalletPage() {
                 )}
               </p>
             </div>
+          </div>
+
+          {/* Mobile Fund Button */}
+          <div className="sm:hidden mt-4">
+            <button
+              onClick={() => setShowFundingModal(true)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white/20 backdrop-blur-sm rounded-xl text-white text-sm font-medium hover:bg-white/30 transition-colors"
+            >
+              <Banknote className="w-4 h-4" />
+              Fund Wallet
+            </button>
           </div>
         </div>
       </motion.div>
@@ -365,7 +394,7 @@ export default function WalletPage() {
                   />
                 ))}
               </div>
-            ) : fundingDetails?.wallet_funding_account ? (
+            ) : account ? (
               <div className="space-y-4">
                 <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                   <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
@@ -373,15 +402,10 @@ export default function WalletPage() {
                   </p>
                   <div className="flex items-center justify-between">
                     <p className="text-gray-900 dark:text-white font-medium">
-                      {fundingDetails.wallet_funding_account.account_name}
+                      {account.account_name}
                     </p>
                     <button
-                      onClick={() =>
-                        copyToClipboard(
-                          fundingDetails.wallet_funding_account.account_name,
-                          'Account name'
-                        )
-                      }
+                      onClick={() => copyToClipboard(account.account_name, 'Account name')}
                       className="p-2 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
                     >
                       <Copy className="w-4 h-4 text-gray-500" />
@@ -395,15 +419,10 @@ export default function WalletPage() {
                   </p>
                   <div className="flex items-center justify-between">
                     <p className="text-2xl font-bold text-gray-900 dark:text-white font-mono tracking-wider">
-                      {fundingDetails.wallet_funding_account.account_number}
+                      {account.account_number}
                     </p>
                     <button
-                      onClick={() =>
-                        copyToClipboard(
-                          fundingDetails.wallet_funding_account.account_number,
-                          'Account number'
-                        )
-                      }
+                      onClick={() => copyToClipboard(account.account_number, 'Account number')}
                       className="p-2 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
                     >
                       <Copy className="w-4 h-4 text-gray-500" />
@@ -417,27 +436,21 @@ export default function WalletPage() {
                   </p>
                   <div className="flex items-center justify-between">
                     <p className="text-gray-900 dark:text-white font-medium">
-                      {fundingDetails.wallet_funding_account.bank_name}
+                      {account.bank_name}
                     </p>
                     <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">
-                      Code: {fundingDetails.wallet_funding_account.bank_code}
+                      Code: {account.bank_code}
                     </span>
                   </div>
                 </div>
 
-                <div className="flex items-start gap-3 p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-xl">
-                  <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-sm text-yellow-800 dark:text-yellow-300 font-medium">
-                      Important
-                    </p>
-                    <p className="text-sm text-yellow-700 dark:text-yellow-400 mt-1">
-                      Transfer funds to this account from your business bank.
-                      Your wallet will be automatically credited once the transfer
-                      is confirmed. A webhook notification will be sent.
-                    </p>
-                  </div>
-                </div>
+                <button
+                  onClick={() => setShowFundingModal(true)}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition-colors font-medium"
+                >
+                  <Info className="w-4 h-4" />
+                  How to Fund Your Wallet
+                </button>
               </div>
             ) : (
               <div className="text-center py-8">
@@ -642,6 +655,190 @@ export default function WalletPage() {
           )}
         </motion.div>
       )}
+
+      {/* ─── FUNDING MODAL ─── */}
+      <AnimatePresence>
+        {showFundingModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+            onClick={() => setShowFundingModal(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-lg bg-white dark:bg-gray-800 rounded-3xl shadow-2xl overflow-hidden"
+            >
+              {/* Modal Header */}
+              <div className="relative p-6 bg-gradient-to-br from-purple-600 via-purple-700 to-indigo-800">
+                <button
+                  onClick={() => setShowFundingModal(false)}
+                  className="absolute top-4 right-4 p-2 bg-white/20 rounded-lg hover:bg-white/30 transition-colors"
+                >
+                  <X className="w-5 h-5 text-white" />
+                </button>
+                <div className="flex items-center gap-3">
+                  <div className="p-3 bg-white/20 rounded-xl">
+                    <Banknote className="w-6 h-6 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-white">Fund Your Wallet</h2>
+                    <p className="text-purple-200 text-sm">
+                      Transfer funds to your dedicated virtual account
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-6 space-y-6">
+                {/* Account Details */}
+                {account && (
+                  <div className="space-y-3">
+                    <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
+                        Account Name
+                      </p>
+                      <div className="flex items-center justify-between">
+                        <p className="text-gray-900 dark:text-white font-medium">
+                          {account.account_name}
+                        </p>
+                        <button
+                          onClick={() => copyToClipboard(account.account_name, 'Account name')}
+                          className="p-2 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+                        >
+                          <Copy className="w-4 h-4 text-gray-500" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
+                        Account Number
+                      </p>
+                      <div className="flex items-center justify-between">
+                        <p className="text-2xl font-bold text-gray-900 dark:text-white font-mono tracking-wider">
+                          {account.account_number}
+                        </p>
+                        <button
+                          onClick={() => copyToClipboard(account.account_number, 'Account number')}
+                          className="p-2 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+                        >
+                          <Copy className="w-4 h-4 text-gray-500" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
+                        Bank
+                      </p>
+                      <p className="text-gray-900 dark:text-white font-medium">
+                        {account.bank_name}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Steps */}
+                <div className="space-y-4">
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                    How to fund:
+                  </h3>
+
+                  <div className="flex gap-4">
+                    <div className="flex flex-col items-center">
+                      <div className="w-8 h-8 bg-purple-100 dark:bg-purple-900/30 rounded-full flex items-center justify-center">
+                        <span className="text-sm font-bold text-purple-600 dark:text-purple-400">1</span>
+                      </div>
+                      <div className="w-0.5 h-full bg-purple-100 dark:bg-purple-900/30 my-1" />
+                    </div>
+                    <div className="pb-4">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Building2 className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                        <p className="text-sm font-medium text-gray-900 dark:text-white">
+                          Bank Transfer
+                        </p>
+                      </div>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        Log into your business bank app or internet banking and initiate a transfer to the account details above.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-4">
+                    <div className="flex flex-col items-center">
+                      <div className="w-8 h-8 bg-purple-100 dark:bg-purple-900/30 rounded-full flex items-center justify-center">
+                        <span className="text-sm font-bold text-purple-600 dark:text-purple-400">2</span>
+                      </div>
+                      <div className="w-0.5 h-full bg-purple-100 dark:bg-purple-900/30 my-1" />
+                    </div>
+                    <div className="pb-4">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Clock className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                        <p className="text-sm font-medium text-gray-900 dark:text-white">
+                          Wait for Confirmation
+                        </p>
+                      </div>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        Transfers typically take 1–5 minutes to reflect. Payuee auto-detects and credits your wallet.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-4">
+                    <div className="flex flex-col items-center">
+                      <div className="w-8 h-8 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center">
+                        <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400" />
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <Mail className="w-4 h-4 text-green-600 dark:text-green-400" />
+                        <p className="text-sm font-medium text-gray-900 dark:text-white">
+                          Webhook Notification
+                        </p>
+                      </div>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        You'll receive a webhook event when the funds are credited. Refresh your wallet to see the updated balance.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Important Notice */}
+                <div className="flex items-start gap-3 p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-xl">
+                  <AlertCircle className="w-5 h-5 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm text-yellow-800 dark:text-yellow-300 font-medium">
+                      Important
+                    </p>
+                    <p className="text-sm text-yellow-700 dark:text-yellow-400 mt-1">
+                      This is a dedicated virtual account assigned to your business. 
+                      Always transfer from your registered business bank account. 
+                      Third-party transfers may be rejected or flagged for review.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setShowFundingModal(false);
+                    handleRefresh();
+                  }}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition-colors font-medium"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Check Balance Now
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
