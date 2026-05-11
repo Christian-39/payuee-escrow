@@ -3,6 +3,8 @@ Views for the payments app.
 Handles wallet and transaction management.
 """
 
+import logging
+
 from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -15,6 +17,8 @@ from .serializers import (
     WalletTransactionSerializer
 )
 from .payuee_client import PayueeClient, get_payuee_client
+
+logger = logging.getLogger(__name__)
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -80,6 +84,8 @@ def get_wallet_balance(request):
         client = PayueeClient()
         result = client.get_wallet_balance()
 
+        logger.info(f"Payuee wallet balance raw response: {result}")
+
         if result.get('success'):
             data = result.get('data', {})
             # Payuee returns: {"status": "success", "wallet_balance": 250000, "currency": "NGN"}
@@ -89,6 +95,7 @@ def get_wallet_balance(request):
                 'currency': data.get('currency', 'NGN'),
             })
         else:
+            logger.error(f"Payuee balance error: {result}")
             return Response(
                 {
                     'success': False,
@@ -99,6 +106,7 @@ def get_wallet_balance(request):
             )
 
     except Exception as e:
+        logger.exception("Error fetching wallet balance")
         return Response(
             {'success': False, 'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -127,14 +135,29 @@ def get_wallet_funding_details(request):
         client = PayueeClient()
         result = client.get_wallet_funding_details()
 
+        logger.info(f"Payuee funding details raw response: {result}")
+
         if result.get('success'):
             data = result.get('data', {})
+            funding_account = data.get('wallet_funding_account')
+
+            if not funding_account:
+                logger.warning("Payuee returned success but wallet_funding_account is missing/None")
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'No funding account configured for this wallet. Contact Payuee support.',
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
             return Response({
                 'success': True,
-                'wallet_funding_account': data.get('wallet_funding_account'),
+                'wallet_funding_account': funding_account,
                 'wallet_balance': data.get('wallet_balance', 0),
             })
         else:
+            logger.error(f"Payuee funding details error: {result}")
             return Response(
                 {
                     'success': False,
@@ -145,6 +168,7 @@ def get_wallet_funding_details(request):
             )
 
     except Exception as e:
+        logger.exception("Error fetching funding details")
         return Response(
             {'success': False, 'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -159,15 +183,17 @@ def get_payuee_wallet_balance(request):
         client = PayueeClient()
         result = client.get_wallet_balance()
 
+        logger.info(f"Admin wallet balance raw response: {result}")
+
         if result.get('success'):
             data = result.get('data', {})
             return Response({
                 'success': True,
                 'wallet_balance': data.get('wallet_balance', 0),
                 'currency': data.get('currency', 'NGN'),
-                'wallet_funding_account': data.get('wallet_funding_account'),
             })
         else:
+            logger.error(f"Admin balance error: {result}")
             return Response(
                 {
                     'success': False,
@@ -178,6 +204,7 @@ def get_payuee_wallet_balance(request):
             )
 
     except Exception as e:
+        logger.exception("Admin error fetching balance")
         return Response(
             {'success': False, 'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -192,14 +219,28 @@ def get_payuee_wallet_funding_details(request):
         client = PayueeClient()
         result = client.get_wallet_funding_details()
 
+        logger.info(f"Admin funding details raw response: {result}")
+
         if result.get('success'):
             data = result.get('data', {})
+            funding_account = data.get('wallet_funding_account')
+
+            if not funding_account:
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'No funding account configured. Contact Payuee support.',
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
             return Response({
                 'success': True,
-                'wallet_funding_account': data.get('wallet_funding_account'),
+                'wallet_funding_account': funding_account,
                 'wallet_balance': data.get('wallet_balance', 0),
             })
         else:
+            logger.error(f"Admin funding details error: {result}")
             return Response(
                 {
                     'success': False,
@@ -210,6 +251,7 @@ def get_payuee_wallet_funding_details(request):
             )
 
     except Exception as e:
+        logger.exception("Admin error fetching funding details")
         return Response(
             {'success': False, 'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -233,15 +275,11 @@ class AdminTransactionDetailView(generics.RetrieveAPIView):
     lookup_field = 'id'
 
 
-import logging
-logger = logging.getLogger(__name__)
-
 @api_view(['GET'])
 def products_list(request):
     client = get_payuee_client()
     result = client.get_store_products()
 
-    logger.info(f"Payuee result: {result}")  # Check your Django logs
+    logger.info(f"Payuee products result: {result}")
 
-    # Return raw for debugging
     return Response(result)
