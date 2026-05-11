@@ -12,6 +12,7 @@ import {
   ShoppingCart,
   User,
   Package,
+  Wallet,
   Settings,
   LogOut,
   Menu,
@@ -33,6 +34,7 @@ const sidebarLinks = [
   { path: '/wishlist', icon: Heart, label: 'Wishlist' },
   { path: '/cart', icon: ShoppingCart, label: 'Cart' },
   { path: '/orders', icon: Package, label: 'Orders' },
+  { path: '/wallet', icon: Wallet, label: 'Wallet' },
   { path: '/profile', icon: User, label: 'Profile' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];

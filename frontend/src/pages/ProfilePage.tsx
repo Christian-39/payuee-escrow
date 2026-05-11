@@ -1,11 +1,33 @@
 /**
  * Profile Page
+ * Displays user profile, wallet summary, and account stats.
  */
 
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Camera, Mail, Phone, MapPin, Package, Heart, Star } from 'lucide-react';
+import {
+  Camera,
+  Mail,
+  Phone,
+  MapPin,
+  Package,
+  Heart,
+  Star,
+  Wallet,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Eye,
+  EyeOff,
+  Landmark,
+  Copy,
+  RefreshCw,
+  ChevronRight,
+  Clock,
+  TrendingUp,
+  TrendingDown,
+} from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { Link } from 'react-router-dom';
 import api from '../lib/api';
 import { toast } from 'sonner';
 
@@ -15,19 +37,41 @@ interface UserStats {
   reviews_count: number;
 }
 
+interface WalletBalance {
+  status: string;
+  wallet_balance: number;
+  currency: string;
+}
+
+interface WalletTransaction {
+  id: string;
+  type: 'credit' | 'debit';
+  amount: number;
+  description: string;
+  status: 'completed' | 'pending' | 'failed';
+  created_at: string;
+}
+
 export default function ProfilePage() {
   const { user, updateUser } = useAuth();
   const [isEditing, setIsEditing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  
-  // Add state for user stats
+
+  // User stats
   const [stats, setStats] = useState<UserStats>({
     orders_count: 0,
     wishlist_count: 0,
     reviews_count: 0,
   });
   const [statsLoading, setStatsLoading] = useState(true);
-  
+
+  // Wallet state
+  const [walletBalance, setWalletBalance] = useState<WalletBalance | null>(null);
+  const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>([]);
+  const [walletLoading, setWalletLoading] = useState(true);
+  const [showWalletBalance, setShowWalletBalance] = useState(true);
+  const [isRefreshingWallet, setIsRefreshingWallet] = useState(false);
+
   const [formData, setFormData] = useState({
     first_name: user?.first_name || '',
     last_name: user?.last_name || '',
@@ -39,25 +83,23 @@ export default function ProfilePage() {
     postal_code: user?.postal_code || '',
   });
 
-  // Fetch user stats when component mounts
+  // Fetch user stats
   useEffect(() => {
     const fetchUserStats = async () => {
       try {
-        // Adjust these endpoints based on your actual API structure
-        const [ordersRes, wishlistRes, reviewsRes] = await Promise.all([
+        const [ordersRes, wishlistRes, reviewsRes] = await Promise.allSettled([
           api.get('/orders/count/'),
           api.get('/wishlist/count/'),
           api.get('/reviews/count/'),
         ]);
 
         setStats({
-          orders_count: ordersRes.data.count || 0,
-          wishlist_count: wishlistRes.data.count || 0,
-          reviews_count: reviewsRes.data.count || 0,
+          orders_count: ordersRes.status === 'fulfilled' ? ordersRes.value.data.count || 0 : 0,
+          wishlist_count: wishlistRes.status === 'fulfilled' ? wishlistRes.value.data.count || 0 : 0,
+          reviews_count: reviewsRes.status === 'fulfilled' ? reviewsRes.value.data.count || 0 : 0,
         });
       } catch (error) {
         console.error('Failed to fetch user stats:', error);
-        // Silently fail - don't block the profile page
       } finally {
         setStatsLoading(false);
       }
@@ -67,6 +109,77 @@ export default function ProfilePage() {
       fetchUserStats();
     }
   }, [user]);
+
+  // Fetch wallet data
+  useEffect(() => {
+    const fetchWalletData = async () => {
+      try {
+        setWalletLoading(true);
+        const [balanceRes, txRes] = await Promise.allSettled([
+          api.get('/payments/wallet/balance/'),
+          api.get('/payments/wallet-transactions/'),
+        ]);
+
+        if (balanceRes.status === 'fulfilled' && balanceRes.value.data.success) {
+          setWalletBalance(balanceRes.value.data);
+        }
+
+        if (txRes.status === 'fulfilled') {
+          setWalletTransactions(txRes.value.data.results || txRes.value.data || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch wallet data:', error);
+      } finally {
+        setWalletLoading(false);
+      }
+    };
+
+    if (user) {
+      fetchWalletData();
+    }
+  }, [user]);
+
+  const refreshWallet = async () => {
+    setIsRefreshingWallet(true);
+    try {
+      const [balanceRes, txRes] = await Promise.allSettled([
+        api.get('/payments/wallet/balance/'),
+        api.get('/payments/wallet-transactions/'),
+      ]);
+
+      if (balanceRes.status === 'fulfilled' && balanceRes.value.data.success) {
+        setWalletBalance(balanceRes.value.data);
+      }
+
+      if (txRes.status === 'fulfilled') {
+        setWalletTransactions(txRes.value.data.results || txRes.value.data || []);
+      }
+      toast.success('Wallet refreshed');
+    } catch (error) {
+      toast.error('Failed to refresh wallet');
+    } finally {
+      setIsRefreshingWallet(false);
+    }
+  };
+
+  const formatAmount = (amount: number | undefined, currency: string = 'NGN') => {
+    if (amount === undefined || amount === null) return '—';
+    const mainUnit = amount / 100;
+    return new Intl.NumberFormat('en-NG', {
+      style: 'currency',
+      currency: currency,
+      minimumFractionDigits: 2,
+    }).format(mainUnit);
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-NG', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -84,7 +197,7 @@ export default function ProfilePage() {
     }
   };
 
-  const BASE_URL = "http://127.0.0.1:8000";
+  const BASE_URL = 'http://127.0.0.1:8000';
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -181,7 +294,121 @@ export default function ProfilePage() {
         </div>
       </motion.div>
 
-      {/* Profile Form */}
+      {/* ── WALLET SUMMARY CARD ── */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+        className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-600 via-purple-700 to-indigo-800"
+      >
+        <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1554224155-6726b3ff858f?w=1920&q=80')] bg-cover bg-center opacity-10" />
+        <div className="absolute inset-0 bg-gradient-to-r from-purple-900/60 to-transparent" />
+
+        <div className="relative p-6 lg:p-8">
+          <div className="flex items-start justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-white/20 backdrop-blur-sm rounded-xl">
+                <Wallet className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <p className="text-purple-200 text-xs uppercase tracking-wider font-medium">
+                  Payuee Wallet
+                </p>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <h2 className="text-3xl font-bold text-white">
+                    {walletLoading ? (
+                      <span className="inline-block w-28 h-8 bg-white/20 rounded animate-pulse" />
+                    ) : showWalletBalance ? (
+                      formatAmount(walletBalance?.wallet_balance, walletBalance?.currency)
+                    ) : (
+                      '****'
+                    )}
+                  </h2>
+                  <button
+                    onClick={() => setShowWalletBalance(!showWalletBalance)}
+                    className="p-1.5 bg-white/10 rounded-lg hover:bg-white/20 transition-colors"
+                  >
+                    {showWalletBalance ? (
+                      <EyeOff className="w-3.5 h-3.5 text-white" />
+                    ) : (
+                      <Eye className="w-3.5 h-3.5 text-white" />
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={refreshWallet}
+                disabled={isRefreshingWallet}
+                className="p-2 bg-white/10 rounded-lg hover:bg-white/20 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 text-white ${isRefreshingWallet ? 'animate-spin' : ''}`} />
+              </button>
+              <Link
+                to="/wallet"
+                className="flex items-center gap-1 px-3 py-2 bg-white/20 backdrop-blur-sm rounded-lg text-white text-sm font-medium hover:bg-white/30 transition-colors"
+              >
+                Manage
+                <ChevronRight className="w-4 h-4" />
+              </Link>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div className="p-3 bg-white/10 backdrop-blur-sm rounded-xl">
+              <div className="flex items-center gap-1.5 mb-1">
+                <TrendingUp className="w-3.5 h-3.5 text-green-300" />
+                <span className="text-purple-200 text-xs">Credited</span>
+              </div>
+              <p className="text-sm font-semibold text-white">
+                {walletLoading
+                  ? '—'
+                  : formatAmount(
+                      walletTransactions
+                        .filter((t) => t.type === 'credit')
+                        .reduce((sum, t) => sum + t.amount, 0),
+                      walletBalance?.currency
+                    )}
+              </p>
+            </div>
+            <div className="p-3 bg-white/10 backdrop-blur-sm rounded-xl">
+              <div className="flex items-center gap-1.5 mb-1">
+                <TrendingDown className="w-3.5 h-3.5 text-red-300" />
+                <span className="text-purple-200 text-xs">Debited</span>
+              </div>
+              <p className="text-sm font-semibold text-white">
+                {walletLoading
+                  ? '—'
+                  : formatAmount(
+                      walletTransactions
+                        .filter((t) => t.type === 'debit')
+                        .reduce((sum, t) => sum + t.amount, 0),
+                      walletBalance?.currency
+                    )}
+              </p>
+            </div>
+            <div className="p-3 bg-white/10 backdrop-blur-sm rounded-xl">
+              <div className="flex items-center gap-1.5 mb-1">
+                <Clock className="w-3.5 h-3.5 text-yellow-300" />
+                <span className="text-purple-200 text-xs">Pending</span>
+              </div>
+              <p className="text-sm font-semibold text-white">
+                {walletLoading
+                  ? '—'
+                  : formatAmount(
+                      walletTransactions
+                        .filter((t) => t.status === 'pending')
+                        .reduce((sum, t) => sum + t.amount, 0),
+                      walletBalance?.currency
+                    )}
+              </p>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Profile Form / Contact Info */}
       {isEditing ? (
         <motion.form
           initial={{ opacity: 0, y: 20 }}

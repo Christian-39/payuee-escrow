@@ -20,6 +20,7 @@ import ProductsPage from './pages/ProductsPage';
 import ProductDetailPage from './pages/ProductDetailPage';
 import CartPage from './pages/CartPage';
 import CheckoutPage from './pages/CheckoutPage';
+import WalletPage from './pages/WalletPage';
 import OrderConfirmationPage from './pages/OrderConfirmationPage';
 import OrderTrackingPage from './pages/OrderTrackingPage';
 import OrdersPage from './pages/OrdersPage';
@@ -36,6 +37,7 @@ import AdminProducts from './pages/admin/AdminProducts';
 import AdminOrders from './pages/admin/AdminOrders';
 import AdminUsers from './pages/admin/AdminUsers';
 import AdminInventory from './pages/admin/AdminInventory';
+import AdminWalletPage from './pages/admin/AdminWalletPage';
 
 // Create Query Client
 const queryClient = new QueryClient({
@@ -67,6 +69,7 @@ function App() {
                   <Route path="orders" element={<OrdersPage />} />
                   <Route path="orders/:orderNumber" element={<OrderTrackingPage />} />
                   <Route path="orders/:orderNumber/confirmation" element={<OrderConfirmationPage />} />
+                  <Route path="wallet" element={<WalletPage />} />
                   <Route path="wishlist" element={<WishlistPage />} />
                   <Route path="profile" element={<ProfilePage />} />
                   <Route path="settings" element={<SettingsPage />} />
@@ -81,6 +84,7 @@ function App() {
                   <Route index element={<AdminDashboard />} />
                   <Route path="products" element={<AdminProducts />} />
                   <Route path="orders" element={<AdminOrders />} />
+                  <Route path="wallet" element={<AdminWalletPage />} />
                   <Route path="users" element={<AdminUsers />} />
                   <Route path="inventory" element={<AdminInventory />} />
                 </Route>

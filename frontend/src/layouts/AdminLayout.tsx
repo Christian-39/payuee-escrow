@@ -16,7 +16,8 @@ import {
   Menu,
   X,
   ChevronLeft,
-  Store
+  Store,
+  Wallet,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -28,6 +29,7 @@ const adminLinks = [
   { path: '/admin/orders', icon: ShoppingCart, label: 'Orders' },
   { path: '/admin/users', icon: Users, label: 'Users' },
   { path: '/admin/inventory', icon: Warehouse, label: 'Inventory' },
+  { path: '/admin/wallet', icon: Wallet, label: 'Wallet' },
 ];
 
 export default function AdminLayout() {
