@@ -7,7 +7,7 @@ import hashlib
 import json
 import time
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import requests
 from django.conf import settings
 
@@ -61,14 +61,13 @@ class PayueeClient:
         if not path.startswith('/'):
             path = '/' + path
 
-        # ─── CRITICAL FIX: Separate sign_path from query params ───
+        # CRITICAL FIX: Separate sign_path from query params
         if '?' in path:
             sign_path, query_string = path.split('?', 1)
             url = f"{self.base_url}{sign_path}?{query_string}"
         else:
             sign_path = path
             url = f"{self.base_url}{path}"
-        # ───────────────────────────────────────────────────────────
 
         if data:
             body = json.dumps(data, separators=(',', ':'), sort_keys=True)
@@ -150,6 +149,7 @@ class PayueeClient:
     def get_store_products(self, **kwargs) -> Dict[str, Any]:
         """Fetch products from Payuee store with optional filters."""
         data = {
+            "category": kwargs.get('category', 'all'),
             "user_lat": kwargs.get('user_lat', 6.5244),
             "user_lon": kwargs.get('user_lon', 3.3792),
             "max_distance": kwargs.get('max_distance', 100),
@@ -158,13 +158,8 @@ class PayueeClient:
             "min_weight": kwargs.get('min_weight', 0),
             "max_weight": kwargs.get('max_weight', 50),
             "page_number": kwargs.get('page_number', 1),
-            "page_size": kwargs.get('page_size', 20),
-            "sort_option": kwargs.get('sort_option', 7),
+            "sort_option": kwargs.get('sort_option', 8),
         }
-        # Only add category if explicitly provided and non-empty
-        category = kwargs.get('category')
-        if category:
-            data['category'] = category
         if 'tags' in kwargs:
             data['tags'] = kwargs['tags']
         return self.make_request('POST', '/v1/get-store-products', data)
@@ -173,8 +168,8 @@ class PayueeClient:
         """Search products with advanced filters."""
         data = {
             "search_term": kwargs.get('search_term', ''),
-            "limit": kwargs.get('limit', 20),
-            "category": kwargs.get('category', ''),
+            "limit": min(int(kwargs.get('limit', 100)), 100),
+            "category": kwargs.get('category', 'all'),
             "min_price": kwargs.get('min_price', 0.0),
             "max_price": kwargs.get('max_price', 100000.0),
             "min_weight": kwargs.get('min_weight', 0.5),
@@ -216,7 +211,6 @@ class PayueeClient:
     def get_cities(self, state: str) -> Dict[str, Any]:
         """Retrieve cities/wards for a state."""
         encoded_state = requests.utils.quote(state)
-        # Full path with query — make_request splits it for signing
         return self.make_request('GET', f'/v1/location/cities?state={encoded_state}')
 
     # ─────────────────────────────────────────────────────────────
@@ -242,23 +236,56 @@ class PayueeClient:
     # ORDERS
     # ─────────────────────────────────────────────────────────────
 
-    def create_order(self, **kwargs) -> Dict[str, Any]:
+    def create_order(
+        self,
+        trans_code: str,
+        webhook_response_url: str,
+        customer: Dict[str, Any],
+        cart_items: List[Dict[str, Any]],
+        shipping: List[Dict[str, Any]],
+        idempotency_key: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Create a new escrow order.
-        Required: trans_code, webhook_response_url, customer, cart_items, shipping
+        
+        Args:
+            trans_code: Customer's secure 6-digit transaction PIN
+            webhook_response_url: URL to receive webhook events
+            customer: Delivery/customer info dict
+            cart_items: List of items with cart_meta wrapper
+            shipping: List of shipping selections per vendor
+            idempotency_key: Required unique key to prevent duplicate orders
         """
+        if not idempotency_key:
+            raise ValueError("idempotency_key is required for order creation")
+
+        # Validate cart_items structure per Payuee docs
+        validated_cart_items = []
+        for item in cart_items:
+            validated_item = {
+                "product_id": item['product_id'],
+                "cart_meta": {
+                    "quantity": item.get('quantity', item.get('cart_meta', {}).get('quantity', 1)),
+                }
+            }
+            # Optional outfit_size
+            outfit_size = item.get('outfit_size') or item.get('cart_meta', {}).get('outfit_size')
+            if outfit_size:
+                validated_item['cart_meta']['outfit_size'] = outfit_size
+            validated_cart_items.append(validated_item)
+
         data = {
-            "trans_code": kwargs['trans_code'],
-            "webhook_response_url": kwargs['webhook_response_url'],
-            "customer": kwargs['customer'],
-            "cart_items": kwargs['cart_items'],
-            "shipping": kwargs['shipping'],
+            "trans_code": trans_code,
+            "webhook_response_url": webhook_response_url,
+            "customer": customer,
+            "cart_items": validated_cart_items,
+            "shipping": shipping,
         }
         return self.make_request(
             'POST',
             '/v1/order/create',
             data,
-            idempotency_key=kwargs.get('idempotency_key')
+            idempotency_key=idempotency_key
         )
 
     def get_order(self, order_id: int) -> Dict[str, Any]:
