@@ -22,8 +22,13 @@ class PayueeClient:
         self.api_secret = settings.PAYUEE_API_SECRET
         self.base_url = getattr(settings, 'PAYUEE_BASE_URL', 'https://escrow.payuee.com')
 
+        # Normalize base_url - remove trailing slash to prevent double slashes
+        self.base_url = self.base_url.rstrip('/')
+
         if not all([self.api_key, self.api_secret, self.base_url]):
             raise ValueError("Payuee API credentials not configured")
+
+        logger.info(f"PayueeClient initialized with base_url: {self.base_url}")
 
     def generate_signature(
         self,
@@ -58,8 +63,12 @@ class PayueeClient:
         retries: int = 2
     ) -> Dict[str, Any]:
         """Make authenticated request to Payuee API."""
+        # Ensure path starts with /
+        if not path.startswith('/'):
+            path = '/' + path
+
         url = f"{self.base_url}{path}"
-        
+
         if data:
             body = json.dumps(data, separators=(',', ':'), sort_keys=True)
         else:
@@ -79,6 +88,10 @@ class PayueeClient:
         if idempotency_key and method.upper() == 'POST':
             headers['X-Payuee-Idempotency-Key'] = idempotency_key
 
+        logger.info(f"Payuee API Request: {method} {url}")
+        logger.debug(f"Request headers: {headers}")
+        logger.debug(f"Request body: {body}")
+
         for attempt in range(retries):
             try:
                 response = requests.request(
@@ -89,6 +102,8 @@ class PayueeClient:
                     timeout=60
                 )
 
+                logger.info(f"Payuee API Response: {response.status_code} for {method} {url}")
+
                 if response.status_code in [200, 201]:
                     return {'success': True, 'data': response.json()}
                 elif response.status_code == 401:
@@ -96,6 +111,17 @@ class PayueeClient:
                     logger.error(f"401 Response body: {response.text}")
                     logger.error(f"401 Response headers: {dict(response.headers)}")
                     return {'success': False, 'error': 'Authentication failed', 'status_code': 401}
+                elif response.status_code == 405:
+                    # Method Not Allowed - log the Allow header to see what methods are accepted
+                    allow_header = response.headers.get('Allow', 'Not specified')
+                    logger.error(f"405 Method Not Allowed for {method} {url}")
+                    logger.error(f"Allowed methods: {allow_header}")
+                    logger.error(f"Response body: {response.text}")
+                    return {
+                        'success': False, 
+                        'error': f'Method Not Allowed. Allowed: {allow_header}', 
+                        'status_code': 405
+                    }
                 else:
                     # Handle other errors
                     raw_content = response.content.decode('utf-8') if response.content else ''
@@ -107,7 +133,7 @@ class PayueeClient:
                         error_data = response.json()
                     except:
                         error_data = {'message': raw_content or 'Unknown error'}
-    
+
                     logger.error(f"API error: {response.status_code} - {error_data}")
                     return {
                         'success': False,
@@ -116,6 +142,7 @@ class PayueeClient:
                     }
 
             except Exception as e:
+                logger.error(f"Request exception on attempt {attempt + 1}: {e}")
                 if attempt < retries - 1:
                     time.sleep(2 ** attempt)
                     continue
@@ -150,10 +177,10 @@ class PayueeClient:
     def get_wallet_balance(self) -> Dict[str, Any]:
         """
         Retrieve the current balance of your Payuee Enterprise Wallet.
-        
+
         Returns wallet balance in the smallest currency unit (kobo for NGN).
         Always convert before displaying to end users.
-        
+
         Response format:
             {
                 "status": "success",
@@ -166,11 +193,11 @@ class PayueeClient:
     def get_wallet_funding_details(self) -> Dict[str, Any]:
         """
         Retrieve your Payuee Enterprise Wallet funding details.
-        
+
         Returns a dedicated virtual account assigned to your business.
         You can transfer funds directly to this account from your business bank.
         A webhook notification will be sent after successful wallet funding.
-        
+
         Response format:
             {
                 "wallet_funding_account": {
@@ -182,7 +209,15 @@ class PayueeClient:
                 "wallet_balance": 250000
             }
         """
-        return self.make_request('GET', '/v1/wallet/funding-details')
+        # Try without trailing slash first (as per docs)
+        result = self.make_request('GET', '/v1/wallet/funding-details')
+
+        if not result.get('success') and result.get('status_code') == 405:
+            # If 405, try with trailing slash as fallback
+            logger.info("Retrying funding-details with trailing slash...")
+            result = self.make_request('GET', '/v1/wallet/funding-details/')
+
+        return result
 
     # ─────────────────────────────────────────────────────────────
 
@@ -226,7 +261,7 @@ class PayueeClient:
                     'payment_url': order_data.get('payment_url'),
                     'instructions': order_data.get('payment_instructions')
                 }
-        
+
             return {
                 'success': False,
                 'error': result.get('error', 'Unknown Payuee error'),

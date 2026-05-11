@@ -42,7 +42,7 @@ const sidebarLinks = [
 const bottomNavLinks = [
   { path: '/', icon: Home, label: 'Home' },
   { path: '/products', icon: ShoppingBag, label: 'Shop' },
-  { path: '/search', icon: Search, label: 'Search' },
+  { path: '/wallet', icon: Wallet, label: 'Wallet' },
   { path: '/cart', icon: ShoppingCart, label: 'Cart' },
   { path: '/profile', icon: User, label: 'Profile' },
 ];

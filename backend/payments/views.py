@@ -72,13 +72,6 @@ class TransactionListView(generics.ListAPIView):
 def get_wallet_balance(request):
     """
     Get wallet balance from Payuee.
-
-    Returns:
-        {
-            "success": true,
-            "wallet_balance": 250000,
-            "currency": "NGN"
-        }
     """
     try:
         client = PayueeClient()
@@ -88,7 +81,6 @@ def get_wallet_balance(request):
 
         if result.get('success'):
             data = result.get('data', {})
-            # Payuee returns: {"status": "success", "wallet_balance": 250000, "currency": "NGN"}
             return Response({
                 'success': True,
                 'wallet_balance': data.get('wallet_balance', 0),
@@ -118,18 +110,6 @@ def get_wallet_balance(request):
 def get_wallet_funding_details(request):
     """
     Get Payuee wallet funding details (virtual account for bank transfer).
-
-    Returns:
-        {
-            "success": true,
-            "wallet_funding_account": {
-                "account_name": "PAYUEE NETWORK LIMITED",
-                "account_number": "1385097053",
-                "bank_name": "Paga Bank",
-                "bank_code": "100002"
-            },
-            "wallet_balance": 250000
-        }
     """
     try:
         client = PayueeClient()
@@ -157,12 +137,33 @@ def get_wallet_funding_details(request):
                 'wallet_balance': data.get('wallet_balance', 0),
             })
         else:
+            error_msg = result.get('error', 'Failed to fetch funding details')
+            status_code = result.get('status_code', 400)
+
+            # Special handling for 405 Method Not Allowed
+            if status_code == 405:
+                logger.error(
+                    f"Payuee API returned 405 for funding-details. "
+                    f"This usually means the endpoint path is incorrect or "
+                    f"your API credentials don't have wallet funding enabled. "
+                    f"Error: {error_msg}"
+                )
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Wallet funding not available. Please contact Payuee support to enable virtual account funding for your API credentials.',
+                        'detail': error_msg,
+                        'status_code': 405
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+
             logger.error(f"Payuee funding details error: {result}")
             return Response(
                 {
                     'success': False,
-                    'error': result.get('error', 'Failed to fetch funding details'),
-                    'status_code': result.get('status_code', 400)
+                    'error': error_msg,
+                    'status_code': status_code
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -240,12 +241,26 @@ def get_payuee_wallet_funding_details(request):
                 'wallet_balance': data.get('wallet_balance', 0),
             })
         else:
+            error_msg = result.get('error', 'Failed to fetch funding details')
+            status_code = result.get('status_code', 400)
+
+            if status_code == 405:
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Wallet funding not available. Contact Payuee support to enable.',
+                        'detail': error_msg,
+                        'status_code': 405
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+
             logger.error(f"Admin funding details error: {result}")
             return Response(
                 {
                     'success': False,
-                    'error': result.get('error', 'Failed to fetch funding details'),
-                    'status_code': result.get('status_code', 400)
+                    'error': error_msg,
+                    'status_code': status_code
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )

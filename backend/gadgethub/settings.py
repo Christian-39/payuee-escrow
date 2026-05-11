@@ -18,7 +18,7 @@ load_dotenv(BASE_DIR / '.env')
 SECRET_KEY = config('SECRET_KEY', default='your-secret-key-here-change-in-production')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 # DEBUG = config('DEBUG', default=False, cast=bool)
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,gadgethub-api-vdcs.onrender.com').split(',')
@@ -159,7 +159,7 @@ SIMPLE_JWT = {
 # CORS Configuration
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
-    default='http://localhost:5173,https://payuee-escrow.onrender.com'
+    default='http://localhost:5173,http://127.0.0.1:5173'
 ).split(',')
 
 CORS_ALLOW_CREDENTIALS = True

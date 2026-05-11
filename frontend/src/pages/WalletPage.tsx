@@ -24,10 +24,10 @@ import {
   CheckCircle2,
   X,
   Info,
-  ArrowRight,
   Building2,
-  Smartphone,
   Mail,
+  ExternalLink,
+  MessageCircle,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import api from '../lib/api';
@@ -71,10 +71,17 @@ interface Transaction {
   reference: string;
 }
 
+interface FundingError {
+  error: string;
+  detail?: string;
+  status_code?: number;
+}
+
 export default function WalletPage() {
   const { user } = useAuth();
   const [balance, setBalance] = useState<WalletBalance | null>(null);
   const [fundingDetails, setFundingDetails] = useState<WalletFundingDetails | null>(null);
+  const [fundingError, setFundingError] = useState<FundingError | null>(null);
   const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -90,6 +97,7 @@ export default function WalletPage() {
   const fetchWalletData = async () => {
     try {
       setIsLoading(true);
+      setFundingError(null);
 
       const [balanceRes, fundingRes, walletTxRes, txRes] = await Promise.allSettled([
         api.get('/payments/wallet/balance/'),
@@ -98,12 +106,37 @@ export default function WalletPage() {
         api.get('/payments/transactions/'),
       ]);
 
-      if (balanceRes.status === 'fulfilled' && balanceRes.value.data.success) {
-        setBalance(balanceRes.value.data);
+      if (balanceRes.status === 'fulfilled') {
+        const balData = balanceRes.value.data;
+        if (balData.success) {
+          setBalance({
+            status: balData.status || 'success',
+            wallet_balance: balData.wallet_balance || 0,
+            currency: balData.currency || 'NGN',
+          });
+        }
       }
 
-      if (fundingRes.status === 'fulfilled' && fundingRes.value.data.success) {
-        setFundingDetails(fundingRes.value.data);
+      if (fundingRes.status === 'fulfilled') {
+        const fundData = fundingRes.value.data;
+        if (fundData.success && fundData.wallet_funding_account) {
+          setFundingDetails({
+            wallet_funding_account: fundData.wallet_funding_account,
+            wallet_balance: fundData.wallet_balance || 0,
+          });
+          setFundingError(null);
+        } else if (!fundData.success) {
+          setFundingError({
+            error: fundData.error || 'Failed to load funding details',
+            detail: fundData.detail,
+            status_code: fundData.status_code,
+          });
+        }
+      } else {
+        // Request failed entirely
+        setFundingError({
+          error: 'Unable to connect to Payuee funding service',
+        });
       }
 
       if (walletTxRes.status === 'fulfilled') {
@@ -132,7 +165,6 @@ export default function WalletPage() {
     toast.success(`${label} copied to clipboard`);
   };
 
-  // Convert kobo to Naira (or smallest unit to main unit)
   const formatAmount = (amount: number | undefined, currency: string = 'NGN') => {
     if (amount === undefined || amount === null) return '—';
     const mainUnit = amount / 100;
@@ -185,6 +217,7 @@ export default function WalletPage() {
   };
 
   const account = fundingDetails?.wallet_funding_account;
+  const isFundingDisabled = fundingError?.status_code === 405;
 
   if (!user) {
     return (
@@ -213,16 +246,14 @@ export default function WalletPage() {
             Manage your Payuee escrow wallet
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            className="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-            <span className="text-sm font-medium">Refresh</span>
-          </button>
-        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          className="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          <span className="text-sm font-medium">Refresh</span>
+        </button>
       </motion.div>
 
       {/* Balance Card */}
@@ -270,13 +301,15 @@ export default function WalletPage() {
               <span className="px-3 py-1.5 bg-green-400/20 text-green-300 text-sm font-medium rounded-full backdrop-blur-sm">
                 Active
               </span>
-              <button
-                onClick={() => setShowFundingModal(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-white/20 backdrop-blur-sm rounded-xl text-white text-sm font-medium hover:bg-white/30 transition-colors"
-              >
-                <Banknote className="w-4 h-4" />
-                Fund Wallet
-              </button>
+              {!isFundingDisabled && (
+                <button
+                  onClick={() => setShowFundingModal(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-white/20 backdrop-blur-sm rounded-xl text-white text-sm font-medium hover:bg-white/30 transition-colors"
+                >
+                  <Banknote className="w-4 h-4" />
+                  Fund Wallet
+                </button>
+              )}
             </div>
           </div>
 
@@ -326,15 +359,17 @@ export default function WalletPage() {
           </div>
 
           {/* Mobile Fund Button */}
-          <div className="sm:hidden mt-4">
-            <button
-              onClick={() => setShowFundingModal(true)}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white/20 backdrop-blur-sm rounded-xl text-white text-sm font-medium hover:bg-white/30 transition-colors"
-            >
-              <Banknote className="w-4 h-4" />
-              Fund Wallet
-            </button>
-          </div>
+          {!isFundingDisabled && (
+            <div className="sm:hidden mt-4">
+              <button
+                onClick={() => setShowFundingModal(true)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white/20 backdrop-blur-sm rounded-xl text-white text-sm font-medium hover:bg-white/30 transition-colors"
+              >
+                <Banknote className="w-4 h-4" />
+                Fund Wallet
+              </button>
+            </div>
+          )}
         </div>
       </motion.div>
 
@@ -393,6 +428,42 @@ export default function WalletPage() {
                     className="h-14 bg-gray-100 dark:bg-gray-700 rounded-xl animate-pulse"
                   />
                 ))}
+              </div>
+            ) : isFundingDisabled ? (
+              /* Payuee funding not enabled */
+              <div className="text-center py-8 space-y-4">
+                <div className="w-16 h-16 bg-orange-100 dark:bg-orange-900/30 rounded-full flex items-center justify-center mx-auto">
+                  <AlertCircle className="w-8 h-8 text-orange-600 dark:text-orange-400" />
+                </div>
+                <div>
+                  <p className="text-gray-900 dark:text-white font-medium mb-1">
+                    Wallet Funding Not Available
+                  </p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm mx-auto">
+                    {fundingError?.error || 'Virtual account funding is not enabled for your Payuee account.'}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 max-w-xs mx-auto">
+                  <a
+                    href="mailto:support@payuee.com"
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition-colors text-sm font-medium"
+                  >
+                    <Mail className="w-4 h-4" />
+                    Contact Payuee Support
+                  </a>
+                  <button
+                    onClick={() => {
+                      window.open('https://payuee.com', '_blank');
+                    }}
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors text-sm font-medium"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    Visit Payuee Website
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400 dark:text-gray-500">
+                  Ask them to enable "virtual account wallet funding" for your API credentials.
+                </p>
               </div>
             ) : account ? (
               <div className="space-y-4">
@@ -658,7 +729,7 @@ export default function WalletPage() {
 
       {/* ─── FUNDING MODAL ─── */}
       <AnimatePresence>
-        {showFundingModal && (
+        {showFundingModal && account && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -696,52 +767,44 @@ export default function WalletPage() {
 
               <div className="p-6 space-y-6">
                 {/* Account Details */}
-                {account && (
-                  <div className="space-y-3">
-                    <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
-                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                        Account Name
+                <div className="space-y-3">
+                  <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Account Name</p>
+                    <div className="flex items-center justify-between">
+                      <p className="text-gray-900 dark:text-white font-medium text-sm">
+                        {account.account_name}
                       </p>
-                      <div className="flex items-center justify-between">
-                        <p className="text-gray-900 dark:text-white font-medium">
-                          {account.account_name}
-                        </p>
-                        <button
-                          onClick={() => copyToClipboard(account.account_name, 'Account name')}
-                          className="p-2 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
-                        >
-                          <Copy className="w-4 h-4 text-gray-500" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
-                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                        Account Number
-                      </p>
-                      <div className="flex items-center justify-between">
-                        <p className="text-2xl font-bold text-gray-900 dark:text-white font-mono tracking-wider">
-                          {account.account_number}
-                        </p>
-                        <button
-                          onClick={() => copyToClipboard(account.account_number, 'Account number')}
-                          className="p-2 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
-                        >
-                          <Copy className="w-4 h-4 text-gray-500" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
-                      <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">
-                        Bank
-                      </p>
-                      <p className="text-gray-900 dark:text-white font-medium">
-                        {account.bank_name}
-                      </p>
+                      <button
+                        onClick={() => copyToClipboard(account.account_name, 'Account name')}
+                        className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+                      >
+                        <Copy className="w-3.5 h-3.5 text-gray-500" />
+                      </button>
                     </div>
                   </div>
-                )}
+
+                  <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Account Number</p>
+                    <div className="flex items-center justify-between">
+                      <p className="text-2xl font-bold text-gray-900 dark:text-white font-mono tracking-wider">
+                        {account.account_number}
+                      </p>
+                      <button
+                        onClick={() => copyToClipboard(account.account_number, 'Account number')}
+                        className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+                      >
+                        <Copy className="w-3.5 h-3.5 text-gray-500" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Bank</p>
+                    <p className="text-gray-900 dark:text-white font-medium text-sm">
+                      {account.bank_name}
+                    </p>
+                  </div>
+                </div>
 
                 {/* Steps */}
                 <div className="space-y-4">
