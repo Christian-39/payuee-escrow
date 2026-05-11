@@ -14,7 +14,7 @@ from .serializers import (
     WalletSerializer,
     WalletTransactionSerializer
 )
-from .payuee_client import PayueeClient
+from .payuee_client import PayueeClient, get_payuee_client
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -28,11 +28,11 @@ class WalletView(generics.RetrieveAPIView):
     """Get user's wallet."""
     serializer_class = WalletSerializer
     permission_classes = [permissions.IsAuthenticated]
-    
+
     def get_object(self):
         wallet, created = Wallet.objects.get_or_create(
             user=self.request.user,
-            defaults={'currency': 'USD'}
+            defaults={'currency': 'NGN'}
         )
         return wallet
 
@@ -42,11 +42,11 @@ class WalletTransactionListView(generics.ListAPIView):
     serializer_class = WalletTransactionSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = StandardResultsSetPagination
-    
+
     def get_queryset(self):
         wallet, created = Wallet.objects.get_or_create(
             user=self.request.user,
-            defaults={'currency': 'USD'}
+            defaults={'currency': 'NGN'}
         )
         return WalletTransaction.objects.filter(wallet=wallet)
 
@@ -56,7 +56,7 @@ class TransactionListView(generics.ListAPIView):
     serializer_class = TransactionSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = StandardResultsSetPagination
-    
+
     def get_queryset(self):
         return Transaction.objects.filter(
             user=self.request.user
@@ -66,27 +66,87 @@ class TransactionListView(generics.ListAPIView):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def get_wallet_balance(request):
-    """Get wallet balance from Payuee."""
+    """
+    Get wallet balance from Payuee.
+
+    Returns:
+        {
+            "success": true,
+            "wallet_balance": 250000,
+            "currency": "NGN"
+        }
+    """
     try:
         client = PayueeClient()
         result = client.get_wallet_balance()
-        
-        if result['success']:
+
+        if result.get('success'):
+            data = result.get('data', {})
+            # Payuee returns: {"status": "success", "wallet_balance": 250000, "currency": "NGN"}
             return Response({
                 'success': True,
-                'balance': result['data'].get('balance', 0),
-                'currency': result['data'].get('currency', 'USD'),
-                'pending_balance': result['data'].get('pending_balance', 0)
+                'wallet_balance': data.get('wallet_balance', 0),
+                'currency': data.get('currency', 'NGN'),
             })
         else:
             return Response(
-                {'error': result.get('error', 'Failed to fetch balance')},
+                {
+                    'success': False,
+                    'error': result.get('error', 'Failed to fetch balance'),
+                    'status_code': result.get('status_code', 400)
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
-    
+
     except Exception as e:
         return Response(
-            {'error': str(e)},
+            {'success': False, 'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def get_wallet_funding_details(request):
+    """
+    Get Payuee wallet funding details (virtual account for bank transfer).
+
+    Returns:
+        {
+            "success": true,
+            "wallet_funding_account": {
+                "account_name": "PAYUEE NETWORK LIMITED",
+                "account_number": "1385097053",
+                "bank_name": "Paga Bank",
+                "bank_code": "100002"
+            },
+            "wallet_balance": 250000
+        }
+    """
+    try:
+        client = PayueeClient()
+        result = client.get_wallet_funding_details()
+
+        if result.get('success'):
+            data = result.get('data', {})
+            return Response({
+                'success': True,
+                'wallet_funding_account': data.get('wallet_funding_account'),
+                'wallet_balance': data.get('wallet_balance', 0),
+            })
+        else:
+            return Response(
+                {
+                    'success': False,
+                    'error': result.get('error', 'Failed to fetch funding details'),
+                    'status_code': result.get('status_code', 400)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    except Exception as e:
+        return Response(
+            {'success': False, 'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
@@ -98,21 +158,60 @@ def get_payuee_wallet_balance(request):
     try:
         client = PayueeClient()
         result = client.get_wallet_balance()
-        
-        if result['success']:
+
+        if result.get('success'):
+            data = result.get('data', {})
             return Response({
                 'success': True,
-                'balance': result['data']
+                'wallet_balance': data.get('wallet_balance', 0),
+                'currency': data.get('currency', 'NGN'),
+                'wallet_funding_account': data.get('wallet_funding_account'),
             })
         else:
             return Response(
-                {'error': result.get('error', 'Failed to fetch balance')},
+                {
+                    'success': False,
+                    'error': result.get('error', 'Failed to fetch balance'),
+                    'status_code': result.get('status_code', 400)
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
-    
+
     except Exception as e:
         return Response(
-            {'error': str(e)},
+            {'success': False, 'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAdminUser])
+def get_payuee_wallet_funding_details(request):
+    """Get Payuee wallet funding details (admin only)."""
+    try:
+        client = PayueeClient()
+        result = client.get_wallet_funding_details()
+
+        if result.get('success'):
+            data = result.get('data', {})
+            return Response({
+                'success': True,
+                'wallet_funding_account': data.get('wallet_funding_account'),
+                'wallet_balance': data.get('wallet_balance', 0),
+            })
+        else:
+            return Response(
+                {
+                    'success': False,
+                    'error': result.get('error', 'Failed to fetch funding details'),
+                    'status_code': result.get('status_code', 400)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    except Exception as e:
+        return Response(
+            {'success': False, 'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
@@ -141,8 +240,8 @@ logger = logging.getLogger(__name__)
 def products_list(request):
     client = get_payuee_client()
     result = client.get_store_products()
-    
+
     logger.info(f"Payuee result: {result}")  # Check your Django logs
-    
+
     # Return raw for debugging
     return Response(result)
