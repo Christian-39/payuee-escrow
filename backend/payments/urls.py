@@ -12,6 +12,10 @@ urlpatterns = [
     path('wallet-transactions/', views.WalletTransactionListView.as_view(), name='wallet-transactions'),
     path('transactions/', views.TransactionListView.as_view(), name='transactions'),
 
+    # Location
+    path('location/states/', views.get_payuee_states, name='location-states'),
+    path('location/cities/', views.get_payuee_cities, name='location-cities'),
+
     # Admin wallet endpoints
     path('admin/wallet/balance/', views.get_payuee_wallet_balance, name='admin-wallet-balance'),
     path('admin/wallet/funding-details/', views.get_payuee_wallet_funding_details, name='admin-wallet-funding-details'),

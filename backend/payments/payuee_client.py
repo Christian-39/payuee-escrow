@@ -21,8 +21,6 @@ class PayueeClient:
         self.api_key = settings.PAYUEE_API_KEY
         self.api_secret = settings.PAYUEE_API_SECRET
         self.base_url = getattr(settings, 'PAYUEE_BASE_URL', 'https://escrow.payuee.com')
-
-        # Normalize base_url - remove trailing slash to prevent double slashes
         self.base_url = self.base_url.rstrip('/')
 
         if not all([self.api_key, self.api_secret, self.base_url]):
@@ -37,13 +35,10 @@ class PayueeClient:
         body: str = '',
         timestamp: Optional[str] = None
     ) -> tuple:
-        """
-        Generate HMAC SHA256 signature.
-        """
+        """Generate HMAC SHA256 signature."""
         if timestamp is None:
             timestamp = str(int(time.time()))
 
-        # Include body in signature as per documentation
         payload = f"{timestamp}{method.upper()}{path}{body}"
 
         signature = hmac.new(
@@ -63,18 +58,25 @@ class PayueeClient:
         retries: int = 2
     ) -> Dict[str, Any]:
         """Make authenticated request to Payuee API."""
-        # Ensure path starts with /
         if not path.startswith('/'):
             path = '/' + path
 
-        url = f"{self.base_url}{path}"
+        # ─── CRITICAL FIX: Separate sign_path from query params ───
+        if '?' in path:
+            sign_path, query_string = path.split('?', 1)
+            url = f"{self.base_url}{sign_path}?{query_string}"
+        else:
+            sign_path = path
+            url = f"{self.base_url}{path}"
+        # ───────────────────────────────────────────────────────────
 
         if data:
             body = json.dumps(data, separators=(',', ':'), sort_keys=True)
         else:
             body = ''
 
-        signature, timestamp = self.generate_signature(method, path, body)
+        # Sign using base path ONLY (no query params)
+        signature, timestamp = self.generate_signature(method, sign_path, body)
 
         headers = {
             'Content-Type': 'application/json',
@@ -84,13 +86,12 @@ class PayueeClient:
             'X-Payuee-Timestamp': timestamp,
         }
 
-        # Use correct idempotency header name per docs
         if idempotency_key and method.upper() == 'POST':
             headers['X-Payuee-Idempotency-Key'] = idempotency_key
 
         logger.info(f"Payuee API Request: {method} {url}")
+        logger.debug(f"Sign path (for HMAC): {sign_path}")
         logger.debug(f"Request headers: {headers}")
-        logger.debug(f"Request body: {body}")
 
         for attempt in range(retries):
             try:
@@ -108,33 +109,21 @@ class PayueeClient:
                     return {'success': True, 'data': response.json()}
                 elif response.status_code == 401:
                     logger.error(f"Authentication failed: {response.text}")
-                    logger.error(f"401 Response body: {response.text}")
-                    logger.error(f"401 Response headers: {dict(response.headers)}")
                     return {'success': False, 'error': 'Authentication failed', 'status_code': 401}
                 elif response.status_code == 405:
-                    # Method Not Allowed - log the Allow header to see what methods are accepted
                     allow_header = response.headers.get('Allow', 'Not specified')
-                    logger.error(f"405 Method Not Allowed for {method} {url}")
-                    logger.error(f"Allowed methods: {allow_header}")
-                    logger.error(f"Response body: {response.text}")
                     return {
-                        'success': False, 
-                        'error': f'Method Not Allowed. Allowed: {allow_header}', 
+                        'success': False,
+                        'error': f'Method Not Allowed. Allowed: {allow_header}',
                         'status_code': 405
                     }
                 else:
-                    # Handle other errors
                     raw_content = response.content.decode('utf-8') if response.content else ''
-                    logger.error(f"Raw response content: {raw_content}")
-                    logger.error(f"Response status: {response.status_code}")
-                    logger.error(f"Response headers: {dict(response.headers)}")
-
                     try:
                         error_data = response.json()
                     except:
                         error_data = {'message': raw_content or 'Unknown error'}
 
-                    logger.error(f"API error: {response.status_code} - {error_data}")
                     return {
                         'success': False,
                         'error': error_data.get('message', error_data.get('error', 'Unknown error')),
@@ -154,123 +143,162 @@ class PayueeClient:
         """Test authentication."""
         return self.make_request('GET', '/v1/auth-status')
 
-    def get_store_products(self) -> Dict[str, Any]:
-        """Fetch products from Payuee store."""
+    # ─────────────────────────────────────────────────────────────
+    # PRODUCTS
+    # ─────────────────────────────────────────────────────────────
+
+    def get_store_products(self, **kwargs) -> Dict[str, Any]:
+        """Fetch products from Payuee store with optional filters."""
         data = {
-            "category": "",  # Valid category from docs
-            "user_lat": 6.5244,     # Lagos coordinates (example)
-            "user_lon": 3.3792,
-            "max_distance": 100,
-            "min_price": 0,
-            "max_price": 100000,
-            "min_weight": 0,
-            "max_weight": 50,
-            "page_number": 5,
-            "sort_option": 7
+            "user_lat": kwargs.get('user_lat', 6.5244),
+            "user_lon": kwargs.get('user_lon', 3.3792),
+            "max_distance": kwargs.get('max_distance', 100),
+            "min_price": kwargs.get('min_price', 0),
+            "max_price": kwargs.get('max_price', 100000),
+            "min_weight": kwargs.get('min_weight', 0),
+            "max_weight": kwargs.get('max_weight', 50),
+            "page_number": kwargs.get('page_number', 1),
+            "page_size": kwargs.get('page_size', 20),
+            "sort_option": kwargs.get('sort_option', 7),
         }
-        return self.make_request('POST', '/v1/products', data)
+        # Only add category if explicitly provided and non-empty
+        category = kwargs.get('category')
+        if category:
+            data['category'] = category
+        if 'tags' in kwargs:
+            data['tags'] = kwargs['tags']
+        return self.make_request('POST', '/v1/get-store-products', data)
+
+    def search_products(self, **kwargs) -> Dict[str, Any]:
+        """Search products with advanced filters."""
+        data = {
+            "search_term": kwargs.get('search_term', ''),
+            "limit": kwargs.get('limit', 20),
+            "category": kwargs.get('category', ''),
+            "min_price": kwargs.get('min_price', 0.0),
+            "max_price": kwargs.get('max_price', 100000.0),
+            "min_weight": kwargs.get('min_weight', 0.5),
+            "max_weight": kwargs.get('max_weight', 100.0),
+            "page_number": kwargs.get('page_number', 1),
+            "sort_option": kwargs.get('sort_option', 7),
+        }
+        if 'tags' in kwargs:
+            data['tags'] = kwargs['tags']
+        return self.make_request('POST', '/v1/products/search', data)
+
+    def get_product(self, product_id: int) -> Dict[str, Any]:
+        """Get single product by ID."""
+        return self.make_request('GET', f'/v1/products/{product_id}')
 
     # ─────────────────────────────────────────────────────────────
-    # WALLET METHODS
+    # WALLET
     # ─────────────────────────────────────────────────────────────
 
     def get_wallet_balance(self) -> Dict[str, Any]:
-        """
-        Retrieve the current balance of your Payuee Enterprise Wallet.
-
-        Returns wallet balance in the smallest currency unit (kobo for NGN).
-        Always convert before displaying to end users.
-
-        Response format:
-            {
-                "status": "success",
-                "wallet_balance": 250000,
-                "currency": "NGN"
-            }
-        """
+        """Retrieve wallet balance."""
         return self.make_request('GET', '/v1/wallet/balance')
 
     def get_wallet_funding_details(self) -> Dict[str, Any]:
-        """
-        Retrieve your Payuee Enterprise Wallet funding details.
-
-        Returns a dedicated virtual account assigned to your business.
-        You can transfer funds directly to this account from your business bank.
-        A webhook notification will be sent after successful wallet funding.
-
-        Response format:
-            {
-                "wallet_funding_account": {
-                    "account_name": "PAYUEE NETWORK LIMITED",
-                    "account_number": "1385097053",
-                    "bank_name": "Paga Bank",
-                    "bank_code": "100002"
-                },
-                "wallet_balance": 250000
-            }
-        """
-        # Try without trailing slash first (as per docs)
+        """Retrieve wallet funding details (virtual account)."""
         result = self.make_request('GET', '/v1/wallet/funding-details')
-
         if not result.get('success') and result.get('status_code') == 405:
-            # If 405, try with trailing slash as fallback
-            logger.info("Retrying funding-details with trailing slash...")
             result = self.make_request('GET', '/v1/wallet/funding-details/')
-
         return result
 
     # ─────────────────────────────────────────────────────────────
+    # LOCATION
+    # ─────────────────────────────────────────────────────────────
 
-    def create_order(self, order, cart_items, eshop_id: str) -> Dict[str, Any]:
-        """Create order in Payuee escrow system."""
-        try:
-           # Build products array per API spec
-            products = []
-            for item in cart_items:
-                products.append({
-                    'product_id': str(item.product.id),
-                    'quantity': item.quantity
-                })
+    def get_states(self) -> Dict[str, Any]:
+        """Retrieve all available states."""
+        return self.make_request('GET', '/v1/location/states')
 
-            # Match exact API structure from documentation
-            data = {
-                'eshop_id': eshop_id,
-                'products': products,
-                'customer_name': (order.user.full_name or order.user.email)[:100],
-                'customer_phone': (order.shipping_phone or '')[:20],
-                'delivery_address': f"{order.shipping_address}, {order.shipping_city}, {order.shipping_state}, {order.shipping_country}"[:200],
-                'reference': order.order_number[:50]
-            }
+    def get_cities(self, state: str) -> Dict[str, Any]:
+        """Retrieve cities/wards for a state."""
+        encoded_state = requests.utils.quote(state)
+        # Full path with query — make_request splits it for signing
+        return self.make_request('GET', f'/v1/location/cities?state={encoded_state}')
 
-            result = self.make_request(
-                'POST',
-                '/v1/place-order',  # ← CORRECT ENDPOINT
-                data,
-                idempotency_key=order.idempotency_key
-            )
+    # ─────────────────────────────────────────────────────────────
+    # LOGISTICS
+    # ─────────────────────────────────────────────────────────────
 
-            logger.info(f"Payuee create_order result: {result}")
+    def get_shipping_fees(self, **kwargs) -> Dict[str, Any]:
+        """
+        Calculate shipping fees per vendor.
+        Required: vendors, state, city, latitude, longitude, cart_items
+        """
+        data = {
+            "vendors": kwargs['vendors'],
+            "state": kwargs['state'],
+            "city": kwargs['city'],
+            "latitude": kwargs['latitude'],
+            "longitude": kwargs['longitude'],
+            "cart_items": kwargs['cart_items'],
+        }
+        return self.make_request('POST', '/v1/logistics/shipping-fees', data)
 
-            if result.get('success'):
-                # Note: Adjust based on actual response structure
-                order_data = result.get('data', {})
-                return {
-                    'success': True,
-                    'order_id': order_data.get('order_id') or order_data.get('id'),
-                    'status': order_data.get('status'),
-                    'payment_url': order_data.get('payment_url'),
-                    'instructions': order_data.get('payment_instructions')
-                }
+    # ─────────────────────────────────────────────────────────────
+    # ORDERS
+    # ─────────────────────────────────────────────────────────────
 
-            return {
-                'success': False,
-                'error': result.get('error', 'Unknown Payuee error'),
-                'status_code': result.get('status_code', 400)
-            }
+    def create_order(self, **kwargs) -> Dict[str, Any]:
+        """
+        Create a new escrow order.
+        Required: trans_code, webhook_response_url, customer, cart_items, shipping
+        """
+        data = {
+            "trans_code": kwargs['trans_code'],
+            "webhook_response_url": kwargs['webhook_response_url'],
+            "customer": kwargs['customer'],
+            "cart_items": kwargs['cart_items'],
+            "shipping": kwargs['shipping'],
+        }
+        return self.make_request(
+            'POST',
+            '/v1/order/create',
+            data,
+            idempotency_key=kwargs.get('idempotency_key')
+        )
 
-        except Exception as e:
-            logger.error(f"create_order exception: {e}", exc_info=True)
-            raise
+    def get_order(self, order_id: int) -> Dict[str, Any]:
+        """Get order details by ID."""
+        return self.make_request('GET', f'/v1/order/{order_id}')
+
+    def list_orders(self, page: int = 1, limit: int = 15) -> Dict[str, Any]:
+        """List paginated orders."""
+        return self.make_request('GET', f'/v1/order/list?page={page}&limit={limit}')
+
+    def scan_qr(self, encrypted_payload: str) -> Dict[str, Any]:
+        """Scan and validate customer QR code."""
+        return self.make_request('POST', '/v1/order/scan-qr', {
+            "encrypted": encrypted_payload
+        })
+
+    def verify_order(self, encrypted: str, customer_id: int, trans_code: str) -> Dict[str, Any]:
+        """Verify delivery with QR + transaction code."""
+        return self.make_request('POST', '/v1/order/verify', {
+            "encrypted": encrypted,
+            "customer_id": customer_id,
+            "trans_code": trans_code,
+        })
+
+    def report_order(self, order_id: int, report_note: str) -> Dict[str, Any]:
+        """Report an issue with an order."""
+        return self.make_request('POST', '/v1/order/report', {
+            "order_id": order_id,
+            "report_note": report_note,
+        })
+
+    def cancel_order(self, order_id: int, trans_code: str, report_note: str = '') -> Dict[str, Any]:
+        """Cancel an order within the allowed window."""
+        data = {
+            "order_id": order_id,
+            "trans_code": trans_code,
+        }
+        if report_note:
+            data['report_note'] = report_note
+        return self.make_request('POST', '/v1/order/cancel', data)
 
 
 # Singleton instance

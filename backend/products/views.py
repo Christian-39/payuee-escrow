@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 class StandardResultsSetPagination(PageNumberPagination):
     """Standard pagination class."""
-    page_size = 8
+    page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
 
