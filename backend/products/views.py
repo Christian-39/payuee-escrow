@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 class StandardResultsSetPagination(PageNumberPagination):
     """Standard pagination class."""
-    page_size = 20
+    page_size = 70
     page_size_query_param = 'page_size'
     max_page_size = 100
 
@@ -60,22 +60,25 @@ class ProductListView(generics.ListAPIView):
         # Fetch and sync from Payuee (with caching to avoid rate limits)
         try:
             client = get_payuee_client()
-            result = client.get_store_products()
-            # DEBUG LOGGING
-            logger.info(f"=== PAYUEE DEBUG ===")
-            logger.info(f"Result success: {result.get('success')}")
-            logger.info(f"Result error: {result.get('error')}")  # ADD THIS
-            logger.info(f"Result status_code: {result.get('status_code')}") 
-            logger.info(f"Result keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
+            result = client.get_store_products(category='all', max_distance=10000)
             
-            if result['success']:
-                logger.info(f"Payuee data keys: {result['data'].keys()}") # DEBUG
-                self._sync_payuee_products(result['data'])
+            if result.get('success'):
+                data = result.get('data', {})
+                products = data.get('success', [])
+                
+                # Only sync if Payuee actually returned products
+                if products:
+                    logger.info(f"Syncing {len(products)} products from Payuee")
+                    self._sync_payuee_products(data)
+                else:
+                    logger.warning("Payuee returned 0 products — keeping local cache")
+            else:
+                logger.error(f"Payuee error: {result.get('error')}")
+                
         except Exception as e:
             logger.error(f"Failed to sync Payuee products: {e}")
-            # Fail silently, serve cached/local products
         
-        # Return local products (including synced ones)
+        # Always return local products
         queryset = Product.objects.filter(status='active')
         logger.info(f"Local products count: {queryset.count()}")  # DEBUG
         
@@ -103,11 +106,17 @@ class ProductListView(generics.ListAPIView):
     
     def _sync_payuee_products(self, data):
         """Sync Payuee products to local database."""
-        # FIXED: "success" is directly the array of products
-        products = data.get('success', [])
-        logger.info(f"Payuee returned {len(products)} products")  # DEBUG
+        import json
+        logger.info(f"RAW DATA: {json.dumps(data, indent=2)[:2000]}")
         
-        for p in products[:5]:
+        # Handle different response structures
+        products = data.get('success', [])
+        if not isinstance(products, list):
+            products = []
+        
+        logger.info(f"Products to sync: {len(products)}")
+        
+        for p in products:
             try:
                 # Get first image URL if available
                 logger.info(f"Syncing product: {p.get('ID')} - {p.get('title')}")  # DEBUG

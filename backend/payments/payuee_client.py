@@ -92,6 +92,10 @@ class PayueeClient:
         logger.debug(f"Sign path (for HMAC): {sign_path}")
         logger.debug(f"Request headers: {headers}")
 
+        if method.upper() == 'GET' and data:
+            logger.warning("GET request with body data! This will likely fail.")
+    
+
         for attempt in range(retries):
             try:
                 response = requests.request(
@@ -152,7 +156,7 @@ class PayueeClient:
             "category": kwargs.get('category', 'all'),
             "user_lat": kwargs.get('user_lat', 6.5244),
             "user_lon": kwargs.get('user_lon', 3.3792),
-            "max_distance": kwargs.get('max_distance', 100),
+            "max_distance": kwargs.get('max_distance', 1000),
             "min_price": kwargs.get('min_price', 0),
             "max_price": kwargs.get('max_price', 100000),
             "min_weight": kwargs.get('min_weight', 0),
@@ -162,20 +166,55 @@ class PayueeClient:
         }
         if 'tags' in kwargs:
             data['tags'] = kwargs['tags']
-        return self.make_request('POST', '/v1/get-store-products', data)
+        
+        # Try POST first (as documented)
+        result = self.make_request('POST', '/v1/products', data)
+        logger.info(f"POST /v1/get-store-products result: success={result.get('success')}, status={result.get('status_code')}, error={result.get('error')}")
+        
+        if not result.get('success') and result.get('status_code') == 405:
+            # Fallback to GET with query params
+            import urllib.parse
+            query_string = urllib.parse.urlencode(data)
+            path = f'/v1/get-store-products?{query_string}'
+            result = self.make_request('GET', path, data=None)
+            logger.info(f"GET /v1/get-store-products result: success={result.get('success')}, products_count={len(result.get('data', {}).get('success', []))}")
+        
+        return result
+
+    def get_all_store_products(self, max_pages=5, **kwargs) -> Dict[str, Any]:
+        """Fetch multiple pages of products from Payuee store."""
+        all_products = []
+        page = 1
+        
+        while page <= max_pages:
+            result = self.get_store_products(page_number=page, **kwargs)
+            if not result.get('success'):
+                break
+                
+            data = result.get('data', {})
+            products = data.get('success', [])
+            all_products.extend(products)
+            
+            pagination = data.get('pagination', {})
+            if pagination.get('NextPage', 0) <= 0 or page >= pagination.get('TotalPages', 1):
+                break
+            page += 1
+        
+        return {'success': True, 'data': {'success': all_products}}
+
 
     def search_products(self, **kwargs) -> Dict[str, Any]:
         """Search products with advanced filters."""
         data = {
             "search_term": kwargs.get('search_term', ''),
-            "limit": min(int(kwargs.get('limit', 100)), 100),
+            "limit": max(int(kwargs.get('limit', 100)), 100),
             "category": kwargs.get('category', 'all'),
             "min_price": kwargs.get('min_price', 0.0),
             "max_price": kwargs.get('max_price', 100000.0),
             "min_weight": kwargs.get('min_weight', 0.5),
             "max_weight": kwargs.get('max_weight', 100.0),
             "page_number": kwargs.get('page_number', 1),
-            "sort_option": kwargs.get('sort_option', 7),
+            "sort_option": kwargs.get('sort_option', 8),
         }
         if 'tags' in kwargs:
             data['tags'] = kwargs['tags']

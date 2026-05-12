@@ -7,10 +7,10 @@ import { motion } from 'framer-motion';
 import {
   Camera, Mail, Phone, MapPin, Package, Heart, Star, Wallet,
   Eye, EyeOff, RefreshCw, ChevronRight, ChevronDown, Loader2,
-  Clock, TrendingUp, TrendingDown,
+  Clock, TrendingUp, TrendingDown, ShoppingBag,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import api from '../lib/api';
 import { toast } from 'sonner';
 import { usePayueeLocation } from '../hooks/usePayueeLocation';
@@ -38,7 +38,8 @@ interface WalletTransaction {
 }
 
 export default function ProfilePage() {
-  const { user, updateUser } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const navigate = useNavigate();
   const [isEditing, setIsEditing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -72,6 +73,14 @@ export default function ProfilePage() {
     latitude: user?.latitude || '',
     longitude: user?.longitude || '',
   });
+
+  // Redirect unauthenticated users
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      toast.error('Please login to view your profile');
+      navigate('/login');
+    }
+  }, [authLoading, isAuthenticated, navigate]);
 
   // Sync existing profile location with Payuee dropdowns
   useEffect(() => {
@@ -204,8 +213,44 @@ export default function ProfilePage() {
     }
   };
 
-  if (!user) {
-    return <div className="text-center py-16"><p className="text-gray-500 dark:text-gray-400">Please login to view your profile</p></div>;
+  // Show loading state while auth is being checked
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="w-12 h-12 border-4 border-purple-200 border-t-purple-600 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Show login prompt for unauthenticated users (fallback if redirect hasn't happened yet)
+  if (!isAuthenticated) {
+    return (
+      <div className="text-center py-16">
+        <div className="w-24 h-24 bg-purple-100 dark:bg-purple-900/30 rounded-full flex items-center justify-center mx-auto mb-6">
+          <ShoppingBag className="w-12 h-12 text-purple-600" />
+        </div>
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+          Your Profile is Waiting
+        </h2>
+        <p className="text-gray-500 dark:text-gray-400 mb-6 max-w-md mx-auto">
+          Please login to view your profile, manage your wallet, and track your orders
+        </p>
+        <div className="flex gap-4 justify-center">
+          <Link
+            to="/login"
+            className="px-8 py-3 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 transition-colors"
+          >
+            Login
+          </Link>
+          <Link
+            to="/register"
+            className="px-8 py-3 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-semibold rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+          >
+            Register
+          </Link>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -215,7 +260,7 @@ export default function ProfilePage() {
         <div className="flex flex-col md:flex-row items-center gap-6">
           <div className="relative">
             <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-purple-600">
-              <img src={user.profile_image ? `${BASE_URL}${user.profile_image}` : '/default-avatar.png'} alt={user.full_name} className="w-full h-full object-cover" />
+              <img src={user?.profile_image ? `${BASE_URL}${user.profile_image}` : '/default-avatar.png'} alt={user?.full_name} className="w-full h-full object-cover" />
             </div>
             <label className="absolute bottom-0 right-0 p-2 bg-purple-600 text-white rounded-full cursor-pointer hover:bg-purple-700 transition-colors">
               <Camera className="w-5 h-5" />
@@ -228,8 +273,8 @@ export default function ProfilePage() {
             )}
           </div>
           <div className="text-center md:text-left flex-1">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{user.full_name}</h1>
-            <p className="text-gray-500 dark:text-gray-400">{user.email}</p>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{user?.full_name}</h1>
+            <p className="text-gray-500 dark:text-gray-400">{user?.email}</p>
             <div className="flex flex-wrap justify-center md:justify-start gap-4 mt-4">
               <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400"><Package className="w-4 h-4" /><span>{statsLoading ? '...' : `${stats.orders_count} Orders`}</span></div>
               <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400"><Heart className="w-4 h-4" /><span>{statsLoading ? '...' : `${stats.wishlist_count} Wishlist`}</span></div>
@@ -397,14 +442,14 @@ export default function ProfilePage() {
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="bg-white dark:bg-gray-800 rounded-2xl p-8 border border-gray-100 dark:border-gray-700">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-6">Contact Information</h2>
           <div className="space-y-4">
-            <div className="flex items-center gap-4"><Mail className="w-5 h-5 text-gray-400" /><div><p className="text-sm text-gray-500 dark:text-gray-400">Email</p><p className="text-gray-900 dark:text-white">{user.email}</p></div></div>
-            <div className="flex items-center gap-4"><Phone className="w-5 h-5 text-gray-400" /><div><p className="text-sm text-gray-500 dark:text-gray-400">Phone</p><p className="text-gray-900 dark:text-white">{user.phone_number || 'Not provided'}</p></div></div>
+            <div className="flex items-center gap-4"><Mail className="w-5 h-5 text-gray-400" /><div><p className="text-sm text-gray-500 dark:text-gray-400">Email</p><p className="text-gray-900 dark:text-white">{user?.email}</p></div></div>
+            <div className="flex items-center gap-4"><Phone className="w-5 h-5 text-gray-400" /><div><p className="text-sm text-gray-500 dark:text-gray-400">Phone</p><p className="text-gray-900 dark:text-white">{user?.phone_number || 'Not provided'}</p></div></div>
             <div className="flex items-center gap-4"><MapPin className="w-5 h-5 text-gray-400" /><div>
               <p className="text-sm text-gray-500 dark:text-gray-400">Address</p>
               <p className="text-gray-900 dark:text-white">
-                {user.address ? `${user.address}, ${user.city}, ${user.state}, ${user.country} ${user.postal_code}` : 'Not provided'}
+                {user?.address ? `${user.address}, ${user.city}, ${user.state}, ${user.country} ${user.postal_code}` : 'Not provided'}
               </p>
-              {user.latitude && user.longitude && <p className="text-xs text-gray-400 mt-1">Coordinates: {user.latitude}, {user.longitude}</p>}
+              {user?.latitude && user?.longitude && <p className="text-xs text-gray-400 mt-1">Coordinates: {user.latitude}, {user.longitude}</p>}
             </div></div>
           </div>
         </motion.div>
