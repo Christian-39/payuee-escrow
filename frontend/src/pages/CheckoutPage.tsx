@@ -28,11 +28,22 @@ interface CheckoutSummary {
   item_count: number;
 }
 
+interface ShippingOption {
+  vendor_id: number;
+  fee: number;
+  method_id: string;
+  config_id: number;
+  company_name: string;
+}
+
 export default function CheckoutPage() {
   const navigate = useNavigate();
   const { cart, refreshCart } = useCart();
   const [isLoading, setIsLoading] = useState(false);
+  const [isCalculatingShipping, setIsCalculatingShipping] = useState(false);
   const [summary, setSummary] = useState<CheckoutSummary | null>(null);
+  const [shippingOptions, setShippingOptions] = useState<ShippingOption[]>([]);
+  const [shippingError, setShippingError] = useState('');
 
   const {
     states,
@@ -60,7 +71,8 @@ export default function CheckoutPage() {
     shipping_latitude: '',
     shipping_longitude: '',
     customer_note: '',
-    trans_code: '',  // <-- ADDED: Payuee transaction PIN
+    trans_code: '',
+    email: '',
   });
 
   useEffect(() => {
@@ -96,6 +108,7 @@ export default function CheckoutPage() {
       shipping_latitude: '',
       shipping_longitude: '',
     }));
+    setShippingOptions([]);
   };
 
   const handleCitySelect = (city: any) => {
@@ -108,17 +121,63 @@ export default function CheckoutPage() {
       shipping_latitude: String(city.latitude),
       shipping_longitude: String(city.longitude),
     }));
+    // Auto-calculate shipping when city is selected
+    calculateShipping(city);
+  };
+
+  const calculateShipping = async (city: any) => {
+    if (!cart || cart.items.length === 0) return;
+    
+    setIsCalculatingShipping(true);
+    setShippingError('');
+    
+    try {
+      // Build cart items with vendor IDs from product data
+      const cartItemsForShipping = cart.items.map((item: any) => ({
+        product_id: item.product.id,
+        eshop_user_id: item.product.eshop_user_id || item.product.vendor_id,
+        quantity: item.quantity,
+      }));
+
+      // Get unique vendors
+      const vendors = [...new Set(cartItemsForShipping.map((item: any) => item.eshop_user_id))];
+
+      const response = await api.post('/payments/shipping-fees/', {
+        vendors,
+        state: selectedState,
+        city: city.city || city.display.split(' - ')[0],
+        latitude: city.latitude,
+        longitude: city.longitude,
+        cart_items: cartItemsForShipping,
+      });
+
+      if (response.data.success) {
+        setShippingOptions(response.data.shipping || []);
+      } else {
+        setShippingError(response.data.error || 'Failed to calculate shipping');
+      }
+    } catch (error: any) {
+      setShippingError(error.response?.data?.error || 'Failed to calculate shipping fees');
+    } finally {
+      setIsCalculatingShipping(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
     if (!selectedCity) {
       toast.error('Please select your delivery location');
       return;
     }
     
-    // Validate trans_code
-    if (!formData.trans_code || formData.trans_code.length !== 6 || !/^\d{6}₦/.test(formData.trans_code)) {
+    if (shippingOptions.length === 0) {
+      toast.error('Please wait for shipping calculation');
+      return;
+    }
+    
+    // FIX: Correct PIN validation - 6 digits only, no ₦ symbol
+    if (!formData.trans_code || formData.trans_code.length !== 6 || !/^\d{6}$/.test(formData.trans_code)) {
       toast.error('Please enter a valid 6-digit Payuee PIN');
       return;
     }
@@ -126,13 +185,61 @@ export default function CheckoutPage() {
     setIsLoading(true);
 
     try {
-      const response = await api.post('/orders/checkout/', formData);
-      toast.success('Order placed successfully!');
-      refreshCart();
-      if (response.data.payment_url) {
-        window.location.href = response.data.payment_url;
+      // Build customer object per Payuee API spec
+      const customer = {
+        email: formData.email || cart.user_email,
+        first_name: formData.shipping_name.split(' ')[0] || formData.shipping_name,
+        last_name: formData.shipping_name.split(' ').slice(1).join(' ') || '',
+        phone_number: formData.shipping_phone,
+        state: formData.shipping_state,
+        city: formData.shipping_city,
+        address_1: formData.shipping_address,
+        address_2: '',
+        latitude: parseFloat(formData.shipping_latitude),
+        longitude: parseFloat(formData.shipping_longitude),
+        order_note: formData.customer_note,
+        zip_code: formData.shipping_postal_code,
+        province: '',
+        save_address: true,
+      };
+
+      // Build cart_items per Payuee API spec
+      const cartItems = cart.items.map((item: any) => ({
+        product_id: item.product.id,
+        cart_meta: {
+          quantity: item.quantity,
+          outfit_size: item.size || '',
+        },
+      }));
+
+      // Build shipping per Payuee API spec
+      const shipping = shippingOptions.map((opt: ShippingOption) => ({
+        vendor_id: opt.vendor_id,
+        fee: opt.fee,
+        method_id: opt.method_id,
+        config_id: opt.config_id,
+        company_name: opt.company_name,
+      }));
+
+      // Call Payuee order creation
+      const response = await api.post('/payments/orders/create/', {
+        trans_code: formData.trans_code,
+        customer,
+        cart_items: cartItems,
+        shipping,
+      });
+
+      if (response.data.success) {
+        if (response.data.status === 'ON_HOLD') {
+          toast.warning(response.data.message || 'Order on hold - please fund your wallet');
+          navigate('/wallet');
+        } else {
+          toast.success('Order placed successfully!');
+          refreshCart();
+          navigate(`/orders/${response.data.order_ids?.[0]}/confirmation`);
+        }
       } else {
-        navigate(`/orders/${response.data.order.order_number}/confirmation`);
+        toast.error(response.data.error || 'Failed to create order');
       }
     } catch (error: any) {
       let message = 'Failed to place order';
@@ -176,6 +283,13 @@ export default function CheckoutPage() {
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Email *</label>
+                  <input type="email" name="email" value={formData.email} onChange={handleChange} required
+                    placeholder="your@email.com"
+                    className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500" />
+                </div>
+
                 <div className="md:col-span-2">
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Full Name *</label>
                   <input type="text" name="shipping_name" value={formData.shipping_name} onChange={handleChange} required
@@ -264,6 +378,34 @@ export default function CheckoutPage() {
                   </div>
                 </motion.div>
               )}
+
+              {/* Shipping Options Display */}
+              {isCalculatingShipping && (
+                <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                  <div className="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-300">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Calculating shipping fees...</span>
+                  </div>
+                </div>
+              )}
+
+              {shippingError && (
+                <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm rounded-xl">
+                  {shippingError}
+                </div>
+              )}
+
+              {shippingOptions.length > 0 && (
+                <div className="mt-4 p-4 bg-green-50 dark:bg-green-900/20 rounded-xl border border-green-100 dark:border-green-800">
+                  <h4 className="text-sm font-semibold text-green-800 dark:text-green-300 mb-2">Shipping Options</h4>
+                  {shippingOptions.map((opt, i) => (
+                    <div key={i} className="flex justify-between items-center text-sm text-green-700 dark:text-green-400">
+                      <span>{opt.company_name} ({opt.method_id})</span>
+                      <span className="font-semibold">₦{safeFixed(opt.fee, 2)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </motion.div>
 
             {/* Payuee Transaction PIN */}
@@ -308,7 +450,7 @@ export default function CheckoutPage() {
                 className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none" />
             </motion.div>
 
-            <button type="submit" disabled={isLoading || !selectedCity || formData.trans_code.length !== 6}
+            <button type="submit" disabled={isLoading || !selectedCity || shippingOptions.length === 0 || formData.trans_code.length !== 6}
               className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition-colors">
               {isLoading ? <><Loader2 className="w-5 h-5 animate-spin" />Processing...</> : <><CreditCard className="w-5 h-5" />Place Order</>}
             </button>
@@ -320,7 +462,7 @@ export default function CheckoutPage() {
           <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-100 dark:border-gray-700">
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Order Summary</h2>
             <div className="space-y-3 mb-6 max-h-60 overflow-y-auto">
-              {cart.items.map((item) => (
+              {cart.items.map((item: any) => (
                 <div key={item.id} className="flex gap-3">
                   <img src={item.product.featured_image} alt={item.product.name} className="w-16 h-16 object-cover rounded-lg" />
                   <div className="flex-1 min-w-0">
@@ -339,7 +481,11 @@ export default function CheckoutPage() {
                 </div>
                 <div className="flex justify-between text-gray-600 dark:text-gray-400">
                   <span>Shipping</span>
-                  <span className="text-green-600">Free</span>
+                  <span className={shippingOptions.reduce((a, b) => a + b.fee, 0) > 0 ? '' : 'text-green-600'}>
+                    {shippingOptions.reduce((a, b) => a + b.fee, 0) > 0 
+                      ? `₦${safeFixed(shippingOptions.reduce((a, b) => a + b.fee, 0), 2)}`
+                      : 'Calculated at checkout'}
+                  </span>
                 </div>
                 <div className="flex justify-between text-gray-600 dark:text-gray-400">
                   <span>Tax</span>
@@ -347,7 +493,9 @@ export default function CheckoutPage() {
                 </div>
                 <div className="flex justify-between pt-3 border-t border-gray-200 dark:border-gray-700">
                   <span className="font-semibold text-gray-900 dark:text-white">Total</span>
-                  <span className="text-xl font-bold text-purple-600">₦{safeFixed(summary.total, 2)}</span>
+                  <span className="text-xl font-bold text-purple-600">
+                    ₦{safeFixed(summary.total + shippingOptions.reduce((a, b) => a + b.fee, 0), 2)}
+                  </span>
                 </div>
               </div>
             )}
@@ -358,7 +506,7 @@ export default function CheckoutPage() {
               </div>
               <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400">
                 <Truck className="w-5 h-5 text-purple-500" />
-                <span>Free shipping on orders over ₦100</span>
+                <span>Shipping calculated per vendor</span>
               </div>
             </div>
           </div>
