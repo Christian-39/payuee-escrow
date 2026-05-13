@@ -10,7 +10,6 @@ from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q, Avg, Count
 from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
-from payments.payuee_client import get_payuee_client
 import logging
 
 from .models import Category, Product, ProductReview, Wishlist, ProductView
@@ -27,14 +26,18 @@ from .serializers import (
 
 logger = logging.getLogger(__name__)
 
+
 class StandardResultsSetPagination(PageNumberPagination):
     """Standard pagination class."""
-    page_size = 70
+    page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
 
 
-# Category Views
+# ─────────────────────────────────────────────────────────────
+# CATEGORY VIEWS
+# ─────────────────────────────────────────────────────────────
+
 class CategoryListView(generics.ListAPIView):
     """List all active categories."""
     queryset = Category.objects.filter(is_active=True, parent=None)
@@ -50,37 +53,18 @@ class CategoryDetailView(generics.RetrieveAPIView):
     lookup_field = 'slug'
 
 
-# Product Views
+# ─────────────────────────────────────────────────────────────
+# PRODUCT VIEWS — FAST: No live Payuee calls here
+# ─────────────────────────────────────────────────────────────
+
 class ProductListView(generics.ListAPIView):
     serializer_class = ProductListSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
-        # Fetch and sync from Payuee (with caching to avoid rate limits)
-        try:
-            client = get_payuee_client()
-            result = client.get_store_products(category='all', max_distance=10000)
-            
-            if result.get('success'):
-                data = result.get('data', {})
-                products = data.get('success', [])
-                
-                # Only sync if Payuee actually returned products
-                if products:
-                    logger.info(f"Syncing {len(products)} products from Payuee")
-                    self._sync_payuee_products(data)
-                else:
-                    logger.warning("Payuee returned 0 products — keeping local cache")
-            else:
-                logger.error(f"Payuee error: {result.get('error')}")
-                
-        except Exception as e:
-            logger.error(f"Failed to sync Payuee products: {e}")
-        
-        # Always return local products
+        # FAST: Only local DB query, no external API calls
         queryset = Product.objects.filter(status='active')
-        logger.info(f"Local products count: {queryset.count()}")  # DEBUG
         
         # Apply filters from query params
         category_slug = self.request.query_params.get('category')
@@ -103,65 +87,6 @@ class ProductListView(generics.ListAPIView):
         queryset = queryset.order_by(ordering)
         
         return queryset.select_related('category')
-    
-    def _sync_payuee_products(self, data):
-        """Sync Payuee products to local database."""
-        import json
-        logger.info(f"RAW DATA: {json.dumps(data, indent=2)[:2000]}")
-        
-        # Handle different response structures
-        products = data.get('success', [])
-        if not isinstance(products, list):
-            products = []
-        
-        logger.info(f"Products to sync: {len(products)}")
-        
-        for p in products:
-            try:
-                # Get first image URL if available
-                logger.info(f"Syncing product: {p.get('ID')} - {p.get('title')}")  # DEBUG
-                featured_image = None
-                if p.get('product_image') and len(p['product_image']) > 0:
-                    image_path = p['product_image'][0]['url']
-                    featured_image = f"https://payuee.com/image/{image_path}"
-                
-                # Create slug from product_url_id or title
-                slug = p.get('product_url_id', '')
-                if not slug:
-                    slug = p['title'].lower().replace(' ', '-')[:50]
-                
-                Product.objects.update_or_create(
-                    payuee_product_id=str(p['ID']),
-                    defaults={
-                        'name': p['title'],
-                        'slug': slug,
-                        'description': p.get('description', ''),
-                        'short_description': p.get('description', '')[:200] if p.get('description') else '',
-                        'price': p['selling_price'],
-                        'compare_at_price': p.get('initial_cost', p['selling_price']),
-                        'quantity': p.get('stock_remaining', 0),
-                        'category_id': self._get_or_create_category(p.get('category', 'others')),
-                        'featured_image': f"https://payuee.com/image/{p['product_image'][0]['url']}" if p.get('product_image') else None,
-                        'source': 'payuee',
-                        'status': 'active' if p.get('stock_remaining', 0) > 0 else 'out_of_stock',
-                        'is_featured': p.get('featured', False),
-                        'average_rating': 0,  # Payuee doesn't provide this
-                        'review_count': p.get('product_review_count', 0),
-                    }
-                )
-            except Exception as e:
-                logger.error(f"Failed to sync product {p.get('ID')}: {e}")
-                continue
-    
-    def _get_or_create_category(self, category_name):
-        """Get or create category by name."""
-        from django.utils.text import slugify
-        slug = slugify(category_name)
-        category, _ = Category.objects.get_or_create(
-            slug=slug,
-            defaults={'name': category_name, 'is_active': True}
-        )
-        return category.id
 
 
 class ProductDetailView(generics.RetrieveAPIView):
@@ -231,7 +156,10 @@ class RelatedProductsView(generics.ListAPIView):
         return Product.objects.none()
 
 
-# Product Search
+# ─────────────────────────────────────────────────────────────
+# PRODUCT SEARCH
+# ─────────────────────────────────────────────────────────────
+
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def search_products(request):
@@ -246,7 +174,7 @@ def search_products(request):
     max_price = data.get('max_price')
     sort_by = data.get('sort_by', 'relevance')
     
-    # Base queryset
+    # Base queryset — LOCAL ONLY, no Payuee calls
     queryset = Product.objects.filter(status='active')
     
     # Apply search query
@@ -298,7 +226,10 @@ def search_products(request):
     return Response(serializer.data)
 
 
-# Wishlist Views
+# ─────────────────────────────────────────────────────────────
+# WISHLIST VIEWS
+# ─────────────────────────────────────────────────────────────
+
 class WishlistListView(generics.ListAPIView):
     """List user's wishlist items."""
     serializer_class = WishlistSerializer
@@ -389,7 +320,10 @@ def toggle_wishlist(request, product_id):
         })
 
 
-# Product Review Views
+# ─────────────────────────────────────────────────────────────
+# PRODUCT REVIEW VIEWS
+# ─────────────────────────────────────────────────────────────
+
 class ProductReviewListView(generics.ListAPIView):
     """List reviews for a product."""
     serializer_class = ProductReviewSerializer
@@ -411,6 +345,7 @@ class ProductReviewCreateView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def perform_create(self, serializer):
+        from rest_framework import serializers as drf_serializers
         product_slug = self.kwargs.get('slug')
         product = get_object_or_404(Product, slug=product_slug)
         
@@ -421,7 +356,7 @@ class ProductReviewCreateView(generics.CreateAPIView):
         ).first()
         
         if existing_review:
-            raise serializers.ValidationError(
+            raise drf_serializers.ValidationError(
                 'You have already reviewed this product.'
             )
         
@@ -459,7 +394,10 @@ class ProductReviewCreateView(generics.CreateAPIView):
         product.save()
 
 
-# Admin Product Management
+# ─────────────────────────────────────────────────────────────
+# ADMIN VIEWS
+# ─────────────────────────────────────────────────────────────
+
 class AdminProductListCreateView(generics.ListCreateAPIView):
     """Admin: List and create products."""
     queryset = Product.objects.all()
