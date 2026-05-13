@@ -157,7 +157,7 @@ export default function CartPage() {
                   {item.product.category?.name}
                 </p>
                 <p className="text-lg font-bold text-purple-600 mt-2">
-                  ${Number(item.product.price).toLocaleString(undefined, {
+                  ₦{Number(item.product.price).toLocaleString(undefined, {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2,
                   })}
@@ -206,7 +206,7 @@ export default function CartPage() {
               <div className="flex justify-between text-gray-600 dark:text-gray-400">
                 <span>Subtotal</span>
                 <span>
-                  ${Number(cart.subtotal).toLocaleString(undefined, {
+                  ₦{Number(cart.subtotal).toLocaleString(undefined, {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2,
                   })}
@@ -228,7 +228,7 @@ export default function CartPage() {
                   Total
                 </span>
                 <span className="text-xl font-bold text-purple-600">
-                  ${Number(cart.total).toLocaleString(undefined, {
+                  ₦{Number(cart.total).toLocaleString(undefined, {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2,
                   })}

@@ -246,16 +246,122 @@ def checkout(request):
         data = serializer.validated_data
         logger.info(f"Shipping to: {data['shipping_city']}")
 
+        # ── CRITICAL: Get trans_code from user input ──
+        trans_code = data.get('trans_code') or request.data.get('trans_code')
+        if not trans_code:
+            return Response(
+                {'error': 'Transaction PIN (trans_code) is required. Please provide your 6-digit PIN.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if len(str(trans_code)) != 6 or not str(trans_code).isdigit():
+            return Response(
+                {'error': 'trans_code must be exactly 6 digits.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # Calculate totals
         subtotal = sum(item.total_price for item in cart_items)
-        shipping_cost = 0
+        shipping_cost = 0  # Will be calculated via Payuee logistics
         tax = subtotal * Decimal('0.08')
         discount = 0
         total = subtotal + shipping_cost + tax - discount
-        logger.info(f"Total: {total}")
+        logger.info(f"Subtotal: {subtotal}, Tax: {tax}, Total: {total}")
+
+        # ── CRITICAL: Build Payuee customer dict ──
+        customer = {
+            "email": request.user.email,
+            "first_name": request.user.first_name or data['shipping_name'].split()[0],
+            "last_name": request.user.last_name or ' '.join(data['shipping_name'].split()[1:]) if len(data['shipping_name'].split()) > 1 else '',
+            "phone_number": data['shipping_phone'],
+            "state": data['shipping_state'],
+            "city": data['shipping_city'],
+            "address_1": data['shipping_address'],
+            "address_2": "",
+            "latitude": data.get('latitude', 6.5244),   # Add these to CheckoutSerializer
+            "longitude": data.get('longitude', 3.3792), # or use defaults
+            "order_note": data.get('customer_note', ''),
+            "zip_code": data.get('shipping_postal_code', ''),
+            "province": "",
+            "save_address": True,
+        }
+
+        # ── CRITICAL: Build Payuee cart_items with cart_meta ──
+        payuee_cart_items = []
+        vendors = set()
+        for item in cart_items:
+            payuee_item = {
+                "product_id": int(item.product.payuee_product_id or item.product.id),
+                "cart_meta": {
+                    "quantity": item.quantity,
+                }
+            }
+            # Add outfit_size if applicable
+            if hasattr(item, 'size') and item.size:
+                payuee_item['cart_meta']['outfit_size'] = item.size
+            
+            payuee_cart_items.append(payuee_item)
+            
+            # Track vendor (eshop_user_id from Payuee product data)
+            # You need to store eshop_user_id on your Product model
+            vendor_id = getattr(item.product, 'payuee_vendor_id', None) or getattr(item.product, 'eshop_user_id', None)
+            if vendor_id:
+                vendors.add(int(vendor_id))
+
+        # ── CRITICAL: Calculate shipping via Payuee logistics ──
+        payuee_client = PayueeClient()
+        
+        shipping = []
+        if vendors:
+            try:
+                shipping_result = payuee_client.get_shipping_fees(
+                    vendors=list(vendors),
+                    state=customer['state'],
+                    city=customer['city'],
+                    latitude=customer['latitude'],
+                    longitude=customer['longitude'],
+                    cart_items=[
+                        {
+                            "product_id": int(item.product.payuee_product_id or item.product.id),
+                            "eshop_user_id": int(getattr(item.product, 'payuee_vendor_id', 0) or getattr(item.product, 'eshop_user_id', 0)),
+                            "quantity": item.quantity,
+                        }
+                        for item in cart_items
+                    ]
+                )
+                
+                if shipping_result.get('success'):
+                    shipping = shipping_result.get('data', {}).get('shipping', [])
+                    shipping_cost = sum(s['fee'] for s in shipping)
+                    total = subtotal + shipping_cost + tax - discount
+                    logger.info(f"Shipping calculated: {shipping_cost}")
+                else:
+                    logger.warning(f"Shipping calculation failed: {shipping_result.get('error')}")
+            except Exception as e:
+                logger.error(f"Shipping calculation error: {e}")
+
+        # ── CRITICAL: Webhook URL ──
+        from django.conf import settings
+        webhook_url = getattr(settings, 'PAYUEE_WEBHOOK_URL', '')
+        if not webhook_url:
+            logger.error("PAYUEE_WEBHOOK_URL not set in settings!")
+            return Response(
+                {'error': 'Payment webhook URL not configured. Contact support.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # ── DEBUG: Log Payuee payload ──
+        import json
+        payuee_payload = {
+            "trans_code": trans_code,
+            "webhook_response_url": webhook_url,
+            "customer": customer,
+            "cart_items": payuee_cart_items,
+            "shipping": shipping,
+        }
+        logger.info(f"PAYUEE PAYLOAD: {json.dumps(payuee_payload, indent=2)}")
 
         with transaction.atomic():
-            # Create order
+            # Create local order FIRST (before Payuee call)
             order = Order.objects.create(
                 user=request.user,
                 subtotal=subtotal,
@@ -263,7 +369,7 @@ def checkout(request):
                 tax=tax,
                 discount=discount,
                 total=total,
-                currency='USD',
+                currency='NGN',  # Payuee uses NGN
                 shipping_name=data['shipping_name'],
                 shipping_address=data['shipping_address'],
                 shipping_city=data['shipping_city'],
@@ -272,11 +378,13 @@ def checkout(request):
                 shipping_postal_code=data['shipping_postal_code'],
                 shipping_phone=data['shipping_phone'],
                 customer_note=data.get('customer_note', ''),
-                idempotency_key=str(uuid.uuid4())
+                idempotency_key=str(uuid.uuid4()),
+                status='pending',
+                payment_status='pending',
             )
-            logger.info(f"Order created: {order.id}")
+            logger.info(f"Local order created: {order.id}")
 
-            # Create order items
+            # Create local order items
             for item in cart_items:
                 OrderItem.objects.create(
                     order=order,
@@ -289,84 +397,101 @@ def checkout(request):
                     total_price=item.total_price
                 )
 
-                if item.product.track_inventory:
-                    item.product.quantity -= item.quantity
-                    item.product.save()
+                # Atomic stock decrement (prevents deadlock!)
+                from django.db.models import F
+                Product.objects.filter(id=item.product_id).update(
+                    quantity=F('quantity') - item.quantity
+                )
 
-            # 🔥 PAYUEE CALL WITH FULL DEBUGGING
+            # ── CALL PAYUEE ──
             logger.info("=== PAYUEE CALL START ===")
-            payuee_result = None
-            
-            try:
-                from payments.payuee_client import PayueeClient
-                payuee_client = PayueeClient()
-                logger.info(f"PayueeClient created")
-                logger.info(f"Base URL: {payuee_client.base_url}")
-                
-                payuee_result = payuee_client.create_order(order, cart_items)
-                logger.info(f"Payuee result: {payuee_result}")
-
-            except Timeout as e:
-                logger.error(f"Payuee Timeout: {e}")
-                payuee_result = {'success': False, 'error': 'timeout'}
-                
-            except RequestException as e:
-                logger.error(f"Payuee RequestException: {e}")
-                payuee_result = {'success': False, 'error': 'request_failed'}
-                
-            except Exception as e:
-                logger.error(f"Payuee unexpected error: {e}", exc_info=True)
-                payuee_result = {'success': False, 'error': str(e)}
-
-            logger.info(f"=== PAYUEE CALL END ===")
+            payuee_result = payuee_client.create_order(
+                trans_code=str(trans_code),
+                webhook_response_url=webhook_url,
+                customer=customer,
+                cart_items=payuee_cart_items,
+                shipping=shipping,
+                idempotency_key=order.idempotency_key
+            )
+            logger.info(f"PAYUEE RESPONSE: {payuee_result}")
 
             # Clear cart
             cart.items.all().delete()
-            logger.info("Cart cleared")
 
-            # Handle result
+            # Handle Payuee response
             if payuee_result and payuee_result.get('success'):
-                logger.info("Payuee SUCCESS")
-                order.payuee_order_id = payuee_result.get('order_id')
-                order.payuee_escrow_status = payuee_result.get('status')
+                response_data = payuee_result.get('data', {})
+                
+                # Save Payuee order IDs
+                order_ids = response_data.get('order_ids', [])
+                if order_ids:
+                    order.payuee_order_id = str(order_ids[0])
+                
+                order_status = response_data.get('status', 'CREATED')
+                order.payuee_escrow_status = order_status
+                
+                if order_status == 'ON_HOLD':
+                    order.status = 'on_hold'
+                    order.payment_status = 'pending'
+                    order.save()
+                    
+                    OrderStatusHistory.objects.create(
+                        order=order,
+                        status='on_hold',
+                        notes='Payuee escrow ON_HOLD: Wallet needs funding.'
+                    )
+                    
+                    return Response({
+                        'message': 'Order created but ON HOLD. Please fund your wallet.',
+                        'order': OrderDetailSerializer(order).data,
+                        'status': 'ON_HOLD',
+                        'order_ids': order_ids,
+                    }, status=status.HTTP_402_PAYMENT_REQUIRED)
+                
+                # Normal success
                 order.status = 'pending'
-                order.payment_status = 'pending'
+                order.payment_status = 'escrow_locked'
                 order.save()
-
+                
                 OrderStatusHistory.objects.create(
                     order=order,
                     status='pending',
-                    notes='Payuee escrow initiated.'
+                    notes=f'Payuee escrow created. Order IDs: {order_ids}'
                 )
-
+                
                 return Response({
                     'message': 'Order created successfully.',
                     'order': OrderDetailSerializer(order).data,
-                    'payment_url': payuee_result.get('payment_url'),
+                    'order_ids': order_ids,
+                    'status': order_status,
                 }, status=status.HTTP_201_CREATED)
 
             else:
-                # Payuee failed - order still created
-                logger.warning(f"Payuee failed: {payuee_result}")
-                order.status = 'pending'
-                order.payment_status = 'pending'
+                # Payuee failed — order exists locally but payment failed
+                error_msg = payuee_result.get('error', 'Unknown Payuee error') if payuee_result else 'No response from Payuee'
+                status_code = payuee_result.get('status_code', 500) if payuee_result else 500
+                
+                logger.error(f"Payuee failed: {status_code} - {error_msg}")
+                
+                order.status = 'payment_failed'
+                order.payment_status = 'failed'
                 order.save()
-
+                
                 OrderStatusHistory.objects.create(
                     order=order,
-                    status='pending',
-                    notes=f'Order created. Payuee error: {payuee_result.get("error") if payuee_result else "unknown"}'
+                    status='payment_failed',
+                    notes=f'Payuee error: {error_msg}'
                 )
-
+                
                 return Response({
-                    'message': 'Order created. Payment pending.',
+                    'message': 'Order saved locally but Payuee payment failed.',
                     'order': OrderDetailSerializer(order).data,
-                    'payment_url': None,
-                    'warning': 'Payment service temporarily unavailable.'
-                }, status=status.HTTP_201_CREATED)
+                    'error': error_msg,
+                    'status_code': status_code,
+                }, status=status.HTTP_201_CREATED)  # Still 201 since local order created
 
     except Exception as e:
-        logger.error(f"Checkout crash: {str(e)}", exc_info=True)
+        logger.exception("Checkout crash")
         return Response(
             {"error": "Something went wrong during checkout"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR

@@ -5,7 +5,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { CreditCard, Truck, Shield, MapPin, Loader2, ChevronDown } from 'lucide-react';
+import { CreditCard, Truck, Shield, MapPin, Loader2, ChevronDown, Lock } from 'lucide-react';
 import api from '../lib/api';
 import { useCart } from '../contexts/CartContext';
 import { toast } from 'sonner';
@@ -60,6 +60,7 @@ export default function CheckoutPage() {
     shipping_latitude: '',
     shipping_longitude: '',
     customer_note: '',
+    trans_code: '',  // <-- ADDED: Payuee transaction PIN
   });
 
   useEffect(() => {
@@ -115,6 +116,13 @@ export default function CheckoutPage() {
       toast.error('Please select your delivery location');
       return;
     }
+    
+    // Validate trans_code
+    if (!formData.trans_code || formData.trans_code.length !== 6 || !/^\d{6}₦/.test(formData.trans_code)) {
+      toast.error('Please enter a valid 6-digit Payuee PIN');
+      return;
+    }
+    
     setIsLoading(true);
 
     try {
@@ -129,6 +137,7 @@ export default function CheckoutPage() {
     } catch (error: any) {
       let message = 'Failed to place order';
       if (error.response?.data?.error) message = error.response.data.error;
+      if (error.response?.data?.message) message = error.response.data.message;
       toast.error(message);
     } finally {
       setIsLoading(false);
@@ -257,6 +266,39 @@ export default function CheckoutPage() {
               )}
             </motion.div>
 
+            {/* Payuee Transaction PIN */}
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}
+              className="bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-100 dark:border-gray-700">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-lg">
+                  <Lock className="w-5 h-5 text-green-600" />
+                </div>
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Payment Authorization</h2>
+              </div>
+              
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Payuee Transaction PIN (6 digits) *
+                </label>
+                <input 
+                  type="password" 
+                  name="trans_code" 
+                  value={formData.trans_code} 
+                  onChange={handleChange} 
+                  required
+                  maxLength={6}
+                  pattern="\d{6}"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="Enter 6-digit PIN"
+                  className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 tracking-widest text-center text-lg font-mono"
+                />
+                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  Your 6-digit Payuee escrow PIN required to authorize payment.
+                </p>
+              </div>
+            </motion.div>
+
             {/* Order Note */}
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
               className="bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-100 dark:border-gray-700">
@@ -266,7 +308,7 @@ export default function CheckoutPage() {
                 className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none" />
             </motion.div>
 
-            <button type="submit" disabled={isLoading || !selectedCity}
+            <button type="submit" disabled={isLoading || !selectedCity || formData.trans_code.length !== 6}
               className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition-colors">
               {isLoading ? <><Loader2 className="w-5 h-5 animate-spin" />Processing...</> : <><CreditCard className="w-5 h-5" />Place Order</>}
             </button>
@@ -284,7 +326,7 @@ export default function CheckoutPage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{item.product.name}</p>
                     <p className="text-xs text-gray-500 dark:text-gray-400">Qty: {item.quantity}</p>
-                    <p className="text-sm font-semibold text-purple-600">${safeFixed(item.total_price, 2)}</p>
+                    <p className="text-sm font-semibold text-purple-600">₦{safeFixed(item.total_price, 2)}</p>
                   </div>
                 </div>
               ))}
@@ -293,7 +335,7 @@ export default function CheckoutPage() {
               <div className="space-y-3 pt-4 border-t border-gray-200 dark:border-gray-700">
                 <div className="flex justify-between text-gray-600 dark:text-gray-400">
                   <span>Subtotal ({summary.item_count} items)</span>
-                  <span>${safeFixed(summary.subtotal, 2)}</span>
+                  <span>₦{safeFixed(summary.subtotal, 2)}</span>
                 </div>
                 <div className="flex justify-between text-gray-600 dark:text-gray-400">
                   <span>Shipping</span>
@@ -301,11 +343,11 @@ export default function CheckoutPage() {
                 </div>
                 <div className="flex justify-between text-gray-600 dark:text-gray-400">
                   <span>Tax</span>
-                  <span>${safeFixed(summary.tax, 2)}</span>
+                  <span>₦{safeFixed(summary.tax, 2)}</span>
                 </div>
                 <div className="flex justify-between pt-3 border-t border-gray-200 dark:border-gray-700">
                   <span className="font-semibold text-gray-900 dark:text-white">Total</span>
-                  <span className="text-xl font-bold text-purple-600">${safeFixed(summary.total, 2)}</span>
+                  <span className="text-xl font-bold text-purple-600">₦{safeFixed(summary.total, 2)}</span>
                 </div>
               </div>
             )}
@@ -316,7 +358,7 @@ export default function CheckoutPage() {
               </div>
               <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400">
                 <Truck className="w-5 h-5 text-purple-500" />
-                <span>Free shipping on orders over $100</span>
+                <span>Free shipping on orders over ₦100</span>
               </div>
             </div>
           </div>

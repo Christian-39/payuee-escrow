@@ -205,24 +205,19 @@ class OrderTrackingSerializer(serializers.ModelSerializer):
 class CheckoutSerializer(serializers.Serializer):
     """Serializer for checkout process."""
     
-    shipping_name = serializers.CharField(max_length=255)
-    shipping_address = serializers.CharField()
-    shipping_city = serializers.CharField(max_length=100)
-    shipping_state = serializers.CharField(max_length=100)
-    shipping_country = serializers.CharField(max_length=100)
-    shipping_postal_code = serializers.CharField(max_length=20)
-    shipping_phone = serializers.CharField(max_length=20)
-    
-    # Optional billing address
-    use_same_address = serializers.BooleanField(default=True)
-    billing_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    billing_address = serializers.CharField(required=False, allow_blank=True)
-    billing_city = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    billing_state = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    billing_country = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    billing_postal_code = serializers.CharField(max_length=20, required=False, allow_blank=True)
-    
+    shipping_name = serializers.CharField(required=True)
+    shipping_address = serializers.CharField(required=True)
+    shipping_city = serializers.CharField(required=True)
+    shipping_state = serializers.CharField(required=True)
+    shipping_country = serializers.CharField(required=True)
+    shipping_postal_code = serializers.CharField(required=True)
+    shipping_phone = serializers.CharField(required=True)
     customer_note = serializers.CharField(required=False, allow_blank=True)
+    
+    # NEW: Required for Payuee
+    trans_code = serializers.CharField(required=True, min_length=6, max_length=6)
+    latitude = serializers.FloatField(required=False, default=6.5244)
+    longitude = serializers.FloatField(required=False, default=3.3792)
 
 
 class OrderSummarySerializer(serializers.Serializer):

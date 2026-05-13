@@ -77,9 +77,9 @@ export default function ProductDetailPage() {
    */
   const formatCurrency = (value: any) => {
     const num = Number(value) || 0;
-    return new Intl.NumberFormat('en-US', {
+    return new Intl.NumberFormat('en-NG', {
       style: 'currency',
-      currency: 'USD',
+      currency: 'NGN',
       minimumFractionDigits: 2
     }).format(num);
   };

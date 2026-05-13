@@ -234,10 +234,7 @@ class PayueeClient:
 
     def get_wallet_funding_details(self) -> Dict[str, Any]:
         """Retrieve wallet funding details (virtual account)."""
-        result = self.make_request('GET', '/v1/wallet/funding-details')
-        if not result.get('success') and result.get('status_code') == 405:
-            result = self.make_request('GET', '/v1/wallet/funding-details/')
-        return result
+        return self.make_request('GET', '/v1/wallet/fund')
 
     # ─────────────────────────────────────────────────────────────
     # LOCATION

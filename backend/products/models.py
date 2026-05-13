@@ -72,12 +72,8 @@ class Product(models.Model):
         choices=PRODUCT_SOURCE_CHOICES, 
         default='local'
     )
-    payuee_product_id = models.CharField(
-        max_length=100, 
-        blank=True, 
-        null=True,
-        help_text='Payuee product ID if sourced from Payuee'
-    )
+    payuee_product_id = models.CharField(max_length=50, blank=True, null=True)
+    payuee_vendor_id = models.CharField(max_length=50, blank=True, null=True)
     
     # Categorization
     category = models.ForeignKey(
