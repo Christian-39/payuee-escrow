@@ -233,7 +233,10 @@ class PayueeClient:
         return self.make_request('GET', '/v1/wallet/balance')
 
     def get_wallet_funding_details(self) -> Dict[str, Any]:
-        """Retrieve wallet funding details (virtual account)."""
+        """
+        Retrieve wallet funding details (virtual account).
+        Endpoint: GET /v1/wallet/fund
+        """
         return self.make_request('GET', '/v1/wallet/fund')
 
     # ─────────────────────────────────────────────────────────────

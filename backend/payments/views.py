@@ -106,62 +106,79 @@ def get_wallet_balance(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def get_wallet_funding_details(request):
+    """
+    Fetch Payuee wallet funding details (virtual account info).
+    Payuee returns funding accounts under data.success as a list.
+    """
     try:
         client = PayueeClient()
         result = client.get_wallet_funding_details()
 
-        if result.get('success'):
-            data = result.get('data', {})
-            funding_account = data.get('wallet_funding_account')
-
-            if not funding_account:
-                return Response(
-                    {
-                        'success': False,
-                        'error': 'No funding account configured for this wallet.',
-                    },
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            # Also convert wallet balance to NGN
-            raw_balance = data.get('wallet_balance', 0)
-            return Response({
-                'success': True,
-                'wallet_funding_account': funding_account,
-                'wallet_balance_kobo': raw_balance,
-                'wallet_balance': raw_balance / 100.0,
-            })
-        else:
+        if not result.get('success'):
             error_msg = result.get('error', 'Failed to fetch funding details')
             status_code = result.get('status_code', 400)
-            
             logger.error(f"Payuee funding details error: {status_code} - {error_msg}")
 
-            # Return the actual status code from Payuee, not always 503
-            if status_code == 401:
-                http_status = status.HTTP_401_UNAUTHORIZED
-            elif status_code == 404:
-                http_status = status.HTTP_404_NOT_FOUND
-            elif status_code == 405:
-                http_status = status.HTTP_405_METHOD_NOT_ALLOWED
-            else:
-                http_status = status.HTTP_400_BAD_REQUEST
+            status_map = {
+                401: status.HTTP_401_UNAUTHORIZED,
+                404: status.HTTP_404_NOT_FOUND,
+                405: status.HTTP_405_METHOD_NOT_ALLOWED,
+                402: status.HTTP_402_PAYMENT_REQUIRED,
+                403: status.HTTP_403_FORBIDDEN,
+            }
+            http_status = status_map.get(status_code, status.HTTP_400_BAD_REQUEST)
 
+            return Response(
+                {'success': False, 'error': error_msg, 'status_code': status_code},
+                status=http_status
+            )
+
+        data = result.get('data', {})
+        
+        # Payuee returns funding accounts under data.success as a list
+        funding_accounts = data.get('success', [])
+        
+        if not funding_accounts or not isinstance(funding_accounts, list):
+            logger.warning("Payuee returned success but no funding accounts list")
             return Response(
                 {
                     'success': False,
-                    'error': error_msg,
-                    'status_code': status_code,
+                    'error': 'No funding account configured for this wallet.',
                 },
-                status=http_status
+                status=status.HTTP_404_NOT_FOUND
             )
+
+        # Get the first (primary) funding account
+        primary_account = funding_accounts[0]
+        
+        # Normalize field names (Payuee uses PascalCase)
+        raw_balance = data.get('wallet_balance', 0)
+
+        return Response({
+            'success': True,
+            'wallet_funding_account': {
+                'id': primary_account.get('ID'),
+                'account_number': primary_account.get('AccountNumber'),
+                'account_name': primary_account.get('AccountName'),
+                'account_reference': primary_account.get('AccountReference'),
+                'bank_name': primary_account.get('BankName'),
+                'bank_code': primary_account.get('BankCode'),  # May not exist
+                'currency': primary_account.get('Currency', 'NGN'),
+                'reference': primary_account.get('Reference'),
+                'status': primary_account.get('Status'),
+            },
+            'wallet_balance_kobo': raw_balance,
+            'wallet_balance': raw_balance / 100.0,
+            'currency': primary_account.get('Currency', 'NGN'),
+        })
+
     except Exception as e:
-        logger.exception("Error fetching funding details")
+        logger.exception("Unexpected error fetching wallet funding details")
         return Response(
-            {'success': False, 'error': str(e)},
+            {'success': False, 'error': 'An unexpected error occurred. Please try again later.'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-
+        
 
 # ─────────────────────────────────────────────────────────────
 # LOCATION VIEWS
