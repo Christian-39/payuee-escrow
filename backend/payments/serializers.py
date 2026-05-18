@@ -1,3 +1,7 @@
+
+# ============================================================
+# FILE 10: payments/serializers.py (FIXED - already correct, just verify)
+# ============================================================
 """
 Serializers for the payments app.
 """

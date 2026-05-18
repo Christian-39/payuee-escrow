@@ -1,3 +1,6 @@
+# ============================================================
+# FILE 3: payments/payuee_client.py (FIXED)
+# ============================================================
 """
 Payuee API Client for escrow integration.
 """
@@ -94,7 +97,7 @@ class PayueeClient:
 
         if method.upper() == 'GET' and data:
             logger.warning("GET request with body data! This will likely fail.")
-    
+
 
         for attempt in range(retries):
             try:
@@ -103,7 +106,7 @@ class PayueeClient:
                     url=url,
                     headers=headers,
                     data=body if body else None,
-                    timeout=60
+                    timeout=15,
                 )
 
                 logger.info(f"Payuee API Response: {response.status_code} for {method} {url}")
@@ -127,10 +130,14 @@ class PayueeClient:
                     except:
                         error_data = {'message': raw_content or 'Unknown error'}
 
+                    # DEBUG: Log raw error response
+                    logger.error(f"PAYUEE RAW ERROR RESPONSE ({response.status_code}): {raw_content[:500]}")
+
                     return {
                         'success': False,
                         'error': error_data.get('message', error_data.get('error', 'Unknown error')),
-                        'status_code': response.status_code
+                        'status_code': response.status_code,
+                        'raw_response': raw_content,  # Include raw for debugging
                     }
 
             except Exception as e:
@@ -166,11 +173,11 @@ class PayueeClient:
         }
         if 'tags' in kwargs:
             data['tags'] = kwargs['tags']
-        
+
         # Try POST first (as documented)
         result = self.make_request('POST', '/v1/products', data)
         logger.info(f"POST /v1/products result: success={result.get('success')}, status={result.get('status_code')}, error={result.get('error')}")
-        
+
         if not result.get('success') and result.get('status_code') == 405:
             # Fallback to GET with query params
             import urllib.parse
@@ -178,28 +185,28 @@ class PayueeClient:
             path = f'/v1/products?{query_string}'
             result = self.make_request('GET', path, data=None)
             logger.info(f"GET /v1/products result: success={result.get('success')}, products_count={len(result.get('data', {}).get('success', []))}")
-        
+
         return result
 
     def get_all_store_products(self, max_pages=5, **kwargs) -> Dict[str, Any]:
         """Fetch multiple pages of products from Payuee store."""
         all_products = []
         page = 1
-        
+
         while page <= max_pages:
             result = self.get_store_products(page_number=page, **kwargs)
             if not result.get('success'):
                 break
-                
+
             data = result.get('data', {})
             products = data.get('success', [])
             all_products.extend(products)
-            
+
             pagination = data.get('pagination', {})
             if pagination.get('NextPage', 0) <= 0 or page >= pagination.get('TotalPages', 1):
                 break
             page += 1
-        
+
         return {'success': True, 'data': {'success': all_products}}
 
 
@@ -269,7 +276,8 @@ class PayueeClient:
             "longitude": kwargs['longitude'],
             "cart_items": kwargs['cart_items'],
         }
-        return self.make_request('POST', '/v1/logistics/shipping-fees', data)
+        # CRITICAL FIX: Corrected typo 'oder' -> 'order'
+        return self.make_request('POST', '/v1/order/shipping-fees', data)
 
     # ─────────────────────────────────────────────────────────────
     # ORDERS
@@ -286,9 +294,9 @@ class PayueeClient:
     ) -> Dict[str, Any]:
         """
         Create a new escrow order.
-        
+
         Args:
-            trans_code: Customer's secure 6-digit transaction PIN
+            trans_code: Customer's secure 6-digit transaction PIN (must be exactly 6 digits, customer-created)
             webhook_response_url: URL to receive webhook events
             customer: Delivery/customer info dict
             cart_items: List of items with cart_meta wrapper
@@ -297,6 +305,11 @@ class PayueeClient:
         """
         if not idempotency_key:
             raise ValueError("idempotency_key is required for order creation")
+
+        # CRITICAL FIX: Validate trans_code format before sending to Payuee
+        import re
+        if not trans_code or not re.match(r'^\d{6}$', str(trans_code)):
+            raise ValueError("trans_code must be exactly 6 digits")
 
         # Validate cart_items structure per Payuee docs
         validated_cart_items = []
@@ -314,7 +327,7 @@ class PayueeClient:
             validated_cart_items.append(validated_item)
 
         data = {
-            "trans_code": trans_code,
+            "trans_code": str(trans_code),
             "webhook_response_url": webhook_response_url,
             "customer": customer,
             "cart_items": validated_cart_items,

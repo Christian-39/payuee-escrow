@@ -1,3 +1,6 @@
+# ============================================================
+# FILE 7: payments/views.py (FIXED - shipping fees typo fix + trans_code validation)
+# ============================================================
 """
 Views for the payments app.
 Handles wallet, location, logistics, and transaction management.
@@ -5,6 +8,7 @@ Handles wallet, location, logistics, and transaction management.
 
 import logging
 import uuid
+import re
 
 from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
@@ -134,10 +138,10 @@ def get_wallet_funding_details(request):
             )
 
         data = result.get('data', {})
-        
+
         # Payuee returns funding accounts under data.success as a list
         funding_accounts = data.get('success', [])
-        
+
         if not funding_accounts or not isinstance(funding_accounts, list):
             logger.warning("Payuee returned success but no funding accounts list")
             return Response(
@@ -150,7 +154,7 @@ def get_wallet_funding_details(request):
 
         # Get the first (primary) funding account
         primary_account = funding_accounts[0]
-        
+
         # Normalize field names (Payuee uses PascalCase)
         raw_balance = data.get('wallet_balance', 0)
 
@@ -178,7 +182,7 @@ def get_wallet_funding_details(request):
             {'success': False, 'error': 'An unexpected error occurred. Please try again later.'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-        
+
 
 # ─────────────────────────────────────────────────────────────
 # LOCATION VIEWS
@@ -262,24 +266,89 @@ def get_payuee_cities(request):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def calculate_shipping(request):
-    """Calculate shipping fees for cart items."""
+    """
+    Calculate shipping fees for cart items via Payuee logistics.
+    """
+    data = request.data
+
+    # ── Validate required fields ──
+    required = ['vendors', 'state', 'city', 'latitude', 'longitude', 'cart_items']
+    missing = [f for f in required if f not in data]
+    if missing:
+        return Response(
+            {'success': False, 'error': f'Missing required fields: {", ".join(missing)}'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Validate cart_items structure
+    cart_items = data['cart_items']
+    if not cart_items or not isinstance(cart_items, list):
+        return Response(
+            {'success': False, 'error': 'cart_items must be a non-empty list'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    for i, item in enumerate(cart_items):
+        item_required = ['product_id', 'eshop_user_id', 'quantity']
+        item_missing = [f for f in item_required if f not in item]
+        if item_missing:
+            return Response(
+                {'success': False, 'error': f'cart_items[{i}] missing fields: {", ".join(item_missing)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    # Validate vendors is a list
+    vendors = data['vendors']
+    if not isinstance(vendors, list) or len(vendors) == 0:
+        return Response(
+            {'success': False, 'error': 'vendors must be a non-empty array'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # ── DEBUG: Log incoming request data ──
+    import json
+    logger.info(f"INCOMING SHIPPING REQUEST: {json.dumps(data, indent=2)}")
+
+    # ── Call Payuee ──
     try:
         client = PayueeClient()
-        result = client.get_shipping_fees(**request.data)
+        result = client.get_shipping_fees(
+            vendors=data['vendors'],
+            state=data['state'],
+            city=data['city'],
+            latitude=float(data['latitude']),
+            longitude=float(data['longitude']),
+            cart_items=data['cart_items'],
+        )
+
+        logger.info(f"PAYUEE RAW RESULT: {result}")
 
         if result.get('success'):
+            # CRITICAL FIX: Extract 'data' from result — Payuee response is wrapped
+            payuee_data = result.get('data', {})
+
+            # Log what Payuee actually returned for debugging
+            logger.info(f"PAYUEE SHIPPING DATA: {json.dumps(payuee_data, indent=2)}")
+
             return Response({
                 'success': True,
-                'shipping': result.get('data', {}).get('shipping', []),
-                'cart': result.get('data', {}).get('cart', []),
+                'shipping': payuee_data.get('shipping', []),
+                'cart': payuee_data.get('cart', []),
             })
         else:
             return Response(
-                {'success': False, 'error': result.get('error', 'Failed to calculate shipping')},
+                {'success': False, 'error': result.get('error', 'Unknown error')},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+    except requests.Timeout:
+        logger.error("Payuee API timeout")
+        return Response(
+            {'success': False, 'error': 'Shipping service timeout. Please try again.'},
+            status=status.HTTP_504_GATEWAY_TIMEOUT
+        )
     except Exception as e:
-        logger.exception("Error calculating shipping")
+        logger.exception("Unexpected shipping error")
         return Response(
             {'success': False, 'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -295,7 +364,7 @@ def calculate_shipping(request):
 def create_payuee_order(request):
     """
     Create an order through Payuee escrow.
-    
+
     Expected request body:
     {
         "trans_code": "123456",
@@ -310,7 +379,7 @@ def create_payuee_order(request):
     }
     """
     data = request.data
-    
+
     # ── Validate required top-level fields ──
     required_top = ['trans_code', 'customer', 'cart_items', 'shipping']
     missing = [f for f in required_top if f not in data]
@@ -319,7 +388,15 @@ def create_payuee_order(request):
             {'success': False, 'error': f'Missing required fields: {", ".join(missing)}'},
             status=status.HTTP_400_BAD_REQUEST
         )
-    
+
+    # ── CRITICAL FIX: Validate trans_code format ──
+    trans_code = str(data.get('trans_code', '')).strip()
+    if not trans_code or not re.match(r'^\d{6}$', trans_code):
+        return Response(
+            {'success': False, 'error': 'trans_code must be exactly 6 digits (customer-created PIN)'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
     # ── Validate customer fields ──
     customer = data['customer']
     cust_required = [
@@ -340,7 +417,7 @@ def create_payuee_order(request):
             {'success': False, 'error': 'cart_items must be a non-empty list'},
             status=status.HTTP_400_BAD_REQUEST
         )
-    
+
     for i, item in enumerate(cart_items):
         if 'product_id' not in item:
             return Response(
@@ -360,7 +437,7 @@ def create_payuee_order(request):
             {'success': False, 'error': 'shipping must be a non-empty list'},
             status=status.HTTP_400_BAD_REQUEST
         )
-    
+
     ship_required = ['vendor_id', 'fee', 'method_id', 'config_id', 'company_name']
     for i, s in enumerate(shipping):
         s_missing = [f for f in ship_required if f not in s]
@@ -387,7 +464,7 @@ def create_payuee_order(request):
     # ── DEBUG: Log the exact payload we will send (BUG FIX #4) ──
     import json
     debug_payload = {
-        "trans_code": data['trans_code'],
+        "trans_code": trans_code,
         "webhook_response_url": webhook_url,
         "customer": customer,
         "cart_items": cart_items,
@@ -399,7 +476,7 @@ def create_payuee_order(request):
     try:
         client = PayueeClient()
         result = client.create_order(
-            trans_code=data['trans_code'],
+            trans_code=trans_code,
             webhook_response_url=webhook_url,
             customer=customer,
             cart_items=cart_items,
@@ -411,7 +488,7 @@ def create_payuee_order(request):
 
         if result.get('success'):
             response_data = result.get('data', {})
-            
+
             # Handle ON_HOLD (insufficient wallet)
             if response_data.get('status') == 'ON_HOLD':
                 return Response({
@@ -420,7 +497,7 @@ def create_payuee_order(request):
                     'order_ids': response_data.get('order_ids', []),
                     'message': response_data.get('message', 'Please fund your wallet to process this order'),
                 }, status=status.HTTP_402_PAYMENT_REQUIRED)
-            
+
             # Normal success
             return Response({
                 'success': True,
@@ -432,9 +509,9 @@ def create_payuee_order(request):
             # Payuee returned an error
             status_code = result.get('status_code', 400)
             error_msg = result.get('error', 'Failed to create order')
-            
+
             logger.error(f"PAYUEE ORDER ERROR: {status_code} - {error_msg}")
-            
+
             http_status = status.HTTP_400_BAD_REQUEST
             if status_code == 402:
                 http_status = status.HTTP_402_PAYMENT_REQUIRED
@@ -442,7 +519,7 @@ def create_payuee_order(request):
                 http_status = status.HTTP_401_UNAUTHORIZED
             elif status_code == 404:
                 http_status = status.HTTP_404_NOT_FOUND
-            
+
             return Response(
                 {
                     'success': False,
@@ -451,7 +528,7 @@ def create_payuee_order(request):
                 },
                 status=http_status
             )
-            
+
     except ValueError as e:
         logger.warning(f"Validation error creating order: {e}")
         return Response(

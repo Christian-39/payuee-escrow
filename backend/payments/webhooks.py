@@ -1,3 +1,7 @@
+
+# ============================================================
+# FILE 8: webhooks.py (FIXED - already mostly correct, verify signature)
+# ============================================================
 """
 Webhook handlers for Payuee.
 Processes incoming webhooks from Payuee escrow system.
@@ -98,7 +102,11 @@ def handle_order_created(data):
     
     try:
         order = Order.objects.get(id=reference_id)
-        order.payuee_order_id = payuee_order_id
+        # CRITICAL FIX: Use payuee_order_ids (JSONField list) instead of payuee_order_id
+        if not order.payuee_order_ids:
+            order.payuee_order_ids = []
+        if payuee_order_id not in order.payuee_order_ids:
+            order.payuee_order_ids.append(payuee_order_id)
         order.payuee_escrow_status = 'created'
         order.save()
         
@@ -122,9 +130,17 @@ def handle_order_paid(data):
     logger.info(f"Payment received for order: {payuee_order_id}")
     
     try:
-        order = Order.objects.get(payuee_order_id=payuee_order_id)
+        # CRITICAL FIX: Search in payuee_order_ids JSONField list
+        order = Order.objects.filter(payuee_order_ids__contains=[payuee_order_id]).first()
+        if not order:
+            order = Order.objects.filter(payuee_order_ids__contains=payuee_order_id).first()
+        
+        if not order:
+            logger.error(f"Order not found for Payuee ID: {payuee_order_id}")
+            raise Order.DoesNotExist(f"Order with Payuee ID {payuee_order_id} not found")
+            
         order.payment_status = 'paid'
-        order.payuee_escrow_status = 'funded'
+        order.payuee_escrow_status = 'escrow_locked'
         order.status = 'confirmed'
         order.save()
         
@@ -146,11 +162,20 @@ def handle_order_verified(data):
     logger.info(f"Order verified in Payuee: {payuee_order_id}")
     
     try:
-        order = Order.objects.get(payuee_order_id=payuee_order_id)
+        # CRITICAL FIX: Search in payuee_order_ids JSONField list
+        order = Order.objects.filter(payuee_order_ids__contains=[payuee_order_id]).first()
+        if not order:
+            order = Order.objects.filter(payuee_order_ids__contains=payuee_order_id).first()
+        
+        if not order:
+            logger.error(f"Order not found for Payuee ID: {payuee_order_id}")
+            raise Order.DoesNotExist(f"Order with Payuee ID {payuee_order_id} not found")
+            
         order.status = 'delivered'
         order.shipping_status = 'delivered'
         order.delivered_at = timezone.now()
-        order.payuee_escrow_status = 'completed'
+        order.payuee_escrow_status = 'released'
+        order.credit_processed = True
         order.save()
         
         OrderStatusHistory.objects.create(
@@ -173,7 +198,15 @@ def handle_order_refunded(data):
     logger.info(f"Order refunded in Payuee: {payuee_order_id}")
     
     try:
-        order = Order.objects.get(payuee_order_id=payuee_order_id)
+        # CRITICAL FIX: Search in payuee_order_ids JSONField list
+        order = Order.objects.filter(payuee_order_ids__contains=[payuee_order_id]).first()
+        if not order:
+            order = Order.objects.filter(payuee_order_ids__contains=payuee_order_id).first()
+        
+        if not order:
+            logger.error(f"Order not found for Payuee ID: {payuee_order_id}")
+            raise Order.DoesNotExist(f"Order with Payuee ID {payuee_order_id} not found")
+            
         order.status = 'refunded'
         order.payment_status = 'refunded'
         order.payuee_escrow_status = 'refunded'

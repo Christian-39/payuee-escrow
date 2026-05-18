@@ -7,12 +7,13 @@ import { motion } from 'framer-motion';
 import {
   Camera, Mail, Phone, MapPin, Package, Heart, Star, Wallet,
   Eye, EyeOff, RefreshCw, ChevronRight, ChevronDown, Loader2,
-  Clock, TrendingUp, TrendingDown, ShoppingBag,
+  Clock, TrendingUp, TrendingDown, ShoppingBag, Lock,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../lib/api';
 import { toast } from 'sonner';
+import PayueePinModal from '../pages/PayueePinModal';
 import { usePayueeLocation } from '../hooks/usePayueeLocation';
 import { cn } from '../lib/utils';
 
@@ -38,7 +39,7 @@ interface WalletTransaction {
 }
 
 export default function ProfilePage() {
-  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, updateUser } = useAuth();
   const navigate = useNavigate();
   const [isEditing, setIsEditing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -51,6 +52,9 @@ export default function ProfilePage() {
   const [walletLoading, setWalletLoading] = useState(true);
   const [showWalletBalance, setShowWalletBalance] = useState(true);
   const [isRefreshingWallet, setIsRefreshingWallet] = useState(false);
+
+  const [showPinModal, setShowPinModal] = useState(false);
+  const [hasPayueePin, setHasPayueePin] = useState(false);
 
   const {
     states, cities, selectedState, selectedCity,
@@ -81,6 +85,19 @@ export default function ProfilePage() {
       navigate('/login');
     }
   }, [authLoading, isAuthenticated, navigate]);
+
+  // Check if user has Payuee PIN set
+  useEffect(() => {
+    const checkPinStatus = async () => {
+      try {
+        const response = await api.get('/auth/profile/');
+        setHasPayueePin(!!response.data.payuee_transaction_pin);
+      } catch (error) {
+        console.error('Failed to check PIN status:', error);
+      }
+    };
+    if (user) checkPinStatus();
+  }, [user]);
 
   // Sync existing profile location with Payuee dropdowns
   useEffect(() => {
@@ -213,6 +230,11 @@ export default function ProfilePage() {
     }
   };
 
+  const handlePinSet = (pin: string) => {
+    setHasPayueePin(true);
+    toast.success('Payuee PIN set successfully!');
+  };
+
   // Show loading state while auth is being checked
   if (authLoading) {
     return (
@@ -331,6 +353,82 @@ export default function ProfilePage() {
               <div className="flex items-center gap-1.5 mb-1"><Clock className="w-3.5 h-3.5 text-yellow-300" /><span className="text-purple-200 text-xs">Pending</span></div>
               <p className="text-sm font-semibold text-white">{walletLoading ? '—' : formatAmount(walletTransactions.filter(t => t.status === 'pending').reduce((sum, t) => sum + t.amount, 0), walletBalance?.currency)}</p>
             </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Security Settings Card */}
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}
+        className="bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-100 dark:border-gray-700">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-6">Security Settings</h2>
+        
+        <div className="space-y-4">
+          {/* Change Password Row */}
+          <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
+                <Lock className="w-5 h-5 text-blue-600" />
+              </div>
+              <div>
+                <h3 className="font-medium text-gray-900 dark:text-white">Password</h3>
+                <p className="text-sm text-gray-500">Change your account password</p>
+              </div>
+            </div>
+            <Link
+              to="/profile/change-password"
+              className="flex items-center gap-1 px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 transition-colors"
+            >
+              Change <ChevronRight className="w-4 h-4" />
+            </Link>
+          </div>
+
+          {/* Payuee PIN Row */}
+          <div className={cn(
+            "flex items-center justify-between p-4 rounded-xl border",
+            hasPayueePin 
+              ? "bg-green-50 dark:bg-green-900/10 border-green-100 dark:border-green-800/30"
+              : "bg-amber-50 dark:bg-amber-900/10 border-amber-100 dark:border-amber-800/30"
+          )}>
+            <div className="flex items-center gap-3">
+              <div className={cn(
+                "p-2 rounded-lg",
+                hasPayueePin
+                  ? "bg-green-100 dark:bg-green-900/30"
+                  : "bg-amber-100 dark:bg-amber-900/30"
+              )}>
+                <Lock className={cn(
+                  "w-5 h-5",
+                  hasPayueePin ? "text-green-600" : "text-amber-600"
+                )} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-medium text-gray-900 dark:text-white">Payuee Transaction PIN</h3>
+                  {hasPayueePin && (
+                    <span className="px-2 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-xs font-medium rounded-full">
+                      Active
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-gray-500">
+                  {hasPayueePin 
+                    ? 'Your PIN is set and ready for escrow orders'
+                    : 'Required for placing Payuee escrow orders'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowPinModal(true)}
+              className={cn(
+                "flex items-center gap-1 px-4 py-2 text-sm font-medium rounded-lg transition-colors",
+                hasPayueePin
+                  ? "bg-green-600 text-white hover:bg-green-700"
+                  : "bg-amber-600 text-white hover:bg-amber-700"
+              )}
+            >
+              {hasPayueePin ? 'Update PIN' : 'Set PIN'}
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </motion.div>
@@ -454,6 +552,13 @@ export default function ProfilePage() {
           </div>
         </motion.div>
       )}
+
+      {/* Payuee PIN Modal */}
+      <PayueePinModal
+        isOpen={showPinModal}
+        onClose={() => setShowPinModal(false)}
+        onPinSet={handlePinSet}
+      />
     </div>
   );
 }

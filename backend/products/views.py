@@ -1,3 +1,7 @@
+
+# ============================================================
+# FILE 9: products/views.py (FIXED - ensure payuee_product_id is exposed)
+# ============================================================
 """
 Views for the products app.
 Handles product catalog, search, wishlist, and reviews.

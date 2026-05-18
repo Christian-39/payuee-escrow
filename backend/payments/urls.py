@@ -1,28 +1,43 @@
+
+# ============================================================
+# FILE 11: payments/urls.py (FIXED - webhook URL config)
+# ============================================================
 """
 URL configuration for payments app.
 """
 
 from django.urls import path
 from . import views
+from .webhooks import payuee_webhook
 
 urlpatterns = [
-    # User wallet endpoints
+    # Wallet
+    path('wallet/', views.WalletView.as_view(), name='wallet'),
+    path('wallet/transactions/', views.WalletTransactionListView.as_view(), name='wallet-transactions'),
     path('wallet/balance/', views.get_wallet_balance, name='wallet-balance'),
-    path('wallet/funding-details/', views.get_wallet_funding_details, name='wallet-funding-details'),
-    path('wallet-transactions/', views.WalletTransactionListView.as_view(), name='wallet-transactions'),
-    path('transactions/', views.TransactionListView.as_view(), name='transactions'),
-
+    path('wallet/fund/', views.get_wallet_funding_details, name='wallet-funding'),
+    
     # Location
     path('location/states/', views.get_payuee_states, name='location-states'),
     path('location/cities/', views.get_payuee_cities, name='location-cities'),
 
-    # Admin wallet endpoints
-    path('admin/wallet/balance/', views.get_payuee_wallet_balance, name='admin-wallet-balance'),
-    path('admin/wallet/funding-details/', views.get_payuee_wallet_funding_details, name='admin-wallet-funding-details'),
-    path('admin/wallet-transactions/', views.WalletTransactionListView.as_view(), name='admin-wallet-transactions'),
+    # Logistics
+    path('shipping-fees/', views.calculate_shipping, name='shipping-fees'),
+    
+    # Orders (Payuee Escrow)
+    path('orders/create/', views.create_payuee_order, name='create-payuee-order'),
+    path('orders/<int:order_id>/', views.get_payuee_order, name='get-payuee-order'),
+    path('orders/', views.list_payuee_orders, name='list-payuee-orders'),
+    
+    # Webhook
+    path('webhook/payuee/', payuee_webhook, name='payuee-webhook'),
+    
+    # Admin
     path('admin/transactions/', views.AdminTransactionListView.as_view(), name='admin-transactions'),
-    path('admin/transactions/<int:id>/', views.AdminTransactionDetailView.as_view(), name='admin-transaction-detail'),
-
-    # Debug
-    path('products-list/', views.products_list, name='products-list'),
+    path('admin/transactions/<uuid:id>/', views.AdminTransactionDetailView.as_view(), name='admin-transaction-detail'),
+    
+    # Products (Passthrough)
+    path('products/', views.products_list, name='payuee-products'),
+    path('products/search/', views.products_search, name='payuee-products-search'),
+    path('products/<int:product_id>/', views.product_detail, name='payuee-product-detail'),
 ]

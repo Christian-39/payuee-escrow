@@ -1,17 +1,21 @@
 /**
- * Orders Page
+ * Orders Page — Updated for Payuee Escrow Integration
+ * 
+ * Shows Payuee-specific statuses: ON_HOLD, escrow_locked, payment_failed
  */
 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Package, ChevronRight } from 'lucide-react';
+import { Package, ChevronRight, AlertTriangle, Clock, Wallet } from 'lucide-react';
 import api from '../lib/api';
 import type { OrderListItem } from '../types';
 import { toast } from 'sonner';
 import { formatDate, formatPrice } from '../lib/utils';
 
+// Updated status colors including Payuee-specific statuses
 const statusColors: Record<string, string> = {
+  // Standard flow
   pending: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
   confirmed: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
   processing: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
@@ -19,6 +23,17 @@ const statusColors: Record<string, string> = {
   delivered: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
   cancelled: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
   refunded: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400',
+
+  // Payuee escrow-specific
+  on_hold: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
+  escrow_locked: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+  payment_failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+};
+
+const statusIcons: Record<string, React.ReactNode> = {
+  on_hold: <Clock className="w-4 h-4" />,
+  escrow_locked: <Wallet className="w-4 h-4" />,
+  payment_failed: <AlertTriangle className="w-4 h-4" />,
 };
 
 export default function OrdersPage() {
@@ -32,9 +47,10 @@ export default function OrdersPage() {
   const fetchOrders = async () => {
     try {
       const response = await api.get('/orders/');
-      setOrders(response.data.results);
-    } catch (error) {
+      setOrders(response.data.results || response.data || []);
+    } catch (error: any) {
       toast.error('Failed to load orders');
+      console.error('Orders fetch error:', error);
     } finally {
       setIsLoading(false);
     }
@@ -79,45 +95,70 @@ export default function OrdersPage() {
       </h1>
 
       <div className="space-y-4">
-        {orders.map((order, index) => (
-          <motion.div
-            key={order.id}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.1 }}
-          >
-            <Link
-              to={`/orders/${order.order_number}`}
-              className="block bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-100 dark:border-gray-700 hover:shadow-lg transition-shadow"
+        {orders.map((order, index) => {
+          const isOnHold = order.status === 'on_hold';
+          const isPaymentFailed = order.status === 'payment_failed';
+
+          return (
+            <motion.div
+              key={order.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.1 }}
             >
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="font-semibold text-gray-900 dark:text-white">
-                      {order.order_number}
-                    </span>
-                    <span
-                      className={`px-3 py-1 text-xs font-medium rounded-full ${
-                        statusColors[order.status]
-                      }`}
-                    >
-                      {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
-                    </span>
+              <Link
+                to={`/orders/${order.order_number}`}
+                className="block bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-100 dark:border-gray-700 hover:shadow-lg transition-shadow"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3 mb-2 flex-wrap">
+                      <span className="font-semibold text-gray-900 dark:text-white">
+                        {order.order_number}
+                      </span>
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full ${
+                          statusColors[order.status] || statusColors.pending
+                        }`}
+                      >
+                        {statusIcons[order.status]}
+                        {order.status === 'on_hold' ? 'Wallet Funding Required' :
+                         order.status === 'escrow_locked' ? 'Escrow Secured' :
+                         order.status === 'payment_failed' ? 'Payment Failed' :
+                         order.status.charAt(0).toUpperCase() + order.status.slice(1)}
+                      </span>
+                    </div>
+
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      {order.item_count} items • {formatDate(order.created_at)}
+                    </p>
+
+                    {/* Payuee-specific info */}
+                    {isOnHold && (
+                      <p className="mt-2 text-sm text-orange-600 dark:text-orange-400 flex items-center gap-1.5">
+                        <AlertTriangle className="w-4 h-4" />
+                        Fund your wallet within 24 hours to process this order
+                      </p>
+                    )}
+
+                    {order.payuee_order_ids && order.payuee_order_ids.length > 0 && (
+                      <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                        Payuee Order{order.payuee_order_ids.length > 1 ? 's' : ''}: {order.payuee_order_ids.join(', ')}
+                      </p>
+                    )}
                   </div>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
-                    {order.item_count} items • {formatDate(order.created_at)}
-                  </p>
+
+                  <div className="flex items-center gap-4 ml-4">
+                    <span className="text-lg font-bold text-purple-600">
+                      {formatPrice(order.total, order.currency)}
+                    </span>
+                    <ChevronRight className="w-5 h-5 text-gray-400" />
+                  </div>
                 </div>
-                <div className="flex items-center gap-4">
-                  <span className="text-lg font-bold text-purple-600">
-                    {formatPrice(order.total, order.currency)}
-                  </span>
-                  <ChevronRight className="w-5 h-5 text-gray-400" />
-                </div>
-              </div>
-            </Link>
-          </motion.div>
-        ))}
+              </Link>
+            </motion.div>
+          );
+        })}
       </div>
     </div>
   );

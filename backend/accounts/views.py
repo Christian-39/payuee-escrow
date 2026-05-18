@@ -3,6 +3,7 @@ Views for the accounts app.
 Handles user authentication, registration, and profile management.
 """
 
+import re
 from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -16,7 +17,8 @@ from .serializers import (
     UserProfileUpdateSerializer,
     ChangePasswordSerializer,
     UserPreferencesSerializer,
-    CustomTokenObtainPairSerializer
+    CustomTokenObtainPairSerializer,
+    PayueePinSerializer,
 )
 
 User = get_user_model()
@@ -150,7 +152,7 @@ def upload_profile_image(request):
     # Save file
     path = default_storage.save(filename, ContentFile(image.read()))
 
-    # ✅ Save PATH (not URL)
+    # Save PATH (not URL)
     request.user.profile_image = path
     request.user.save()
 
@@ -158,6 +160,7 @@ def upload_profile_image(request):
         'message': 'Uploaded successfully',
         'profile_image': request.user.profile_image.url
     })
+
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
@@ -178,3 +181,66 @@ def user_stats(request):
     }
     
     return Response(stats)
+
+
+# ── NEW: Payuee Transaction PIN Endpoints ──
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([permissions.IsAuthenticated])
+def profile(request):
+    """
+    Get or update user profile including Payuee transaction PIN.
+    Used by CheckoutPage to fetch saved PIN.
+    """
+    user = request.user
+
+    if request.method == 'GET':
+        serializer = UserSerializer(user)
+        return Response(serializer.data)
+
+    elif request.method == 'PATCH':
+        # Handle Payuee PIN update with dedicated serializer
+        pin = request.data.get('payuee_transaction_pin')
+        if pin is not None:
+            pin_serializer = PayueePinSerializer(data={'payuee_transaction_pin': pin})
+            if not pin_serializer.is_valid():
+                return Response(pin_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+            user.payuee_transaction_pin = pin_serializer.validated_data['payuee_transaction_pin']
+            user.save()
+            
+            return Response({
+                'message': 'Payuee transaction PIN updated successfully.',
+                'payuee_transaction_pin': user.payuee_transaction_pin
+            })
+
+        # Handle other profile fields
+        serializer = UserProfileUpdateSerializer(user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                'message': 'Profile updated successfully.',
+                'user': UserSerializer(user).data
+            })
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def set_payuee_pin(request):
+    """
+    Dedicated endpoint for setting/updating Payuee transaction PIN.
+    Called from profile security settings page.
+    """
+    serializer = PayueePinSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    pin = serializer.validated_data['payuee_transaction_pin']
+    request.user.payuee_transaction_pin = pin
+    request.user.save()
+    
+    return Response({
+        'message': 'Payuee transaction PIN set successfully.',
+        'payuee_transaction_pin': pin
+    }, status=status.HTTP_200_OK)

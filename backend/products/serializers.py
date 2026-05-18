@@ -1,3 +1,9 @@
+
+# Generate all the modified files based on the analysis
+
+# ============================================================
+# FILE 1: products/serializers.py (FIXED)
+# ============================================================
 """
 Serializers for the products app.
 """
@@ -133,6 +139,9 @@ class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
     )
     is_wishlisted = serializers.SerializerMethodField()
     featured_image = serializers.SerializerMethodField()
+    eshop_user_id = serializers.SerializerMethodField()
+    # CRITICAL FIX: Expose payuee_product_id so frontend can use it for Payuee API calls
+    payuee_product_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -140,8 +149,28 @@ class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
             'id', 'name', 'slug', 'sku', 'price', 'compare_at_price',
             'discount_percentage', 'featured_image', 'category',
             'is_in_stock', 'average_rating', 'review_count',
-            'is_featured', 'is_wishlisted', 'created_at', 'source'
+            'is_featured', 'eshop_user_id', 'payuee_product_id',
+            'is_wishlisted', 'created_at', 'source'
         ]
+
+    def get_eshop_user_id(self, obj):
+        """Return payuee_vendor_id as integer for Payuee API compatibility."""
+        if obj.payuee_vendor_id:
+            try:
+                return int(obj.payuee_vendor_id)
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    # CRITICAL FIX: Expose payuee_product_id as integer
+    def get_payuee_product_id(self, obj):
+        """Return payuee_product_id as integer for Payuee API compatibility."""
+        if obj.payuee_product_id:
+            try:
+                return int(obj.payuee_product_id)
+            except (ValueError, TypeError):
+                return None
+        return None
 
     def get_featured_image(self, obj):
         request = self.context.get('request')
@@ -194,12 +223,15 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
     specifications = serializers.JSONField()
     related_products = serializers.SerializerMethodField()
     featured_image = serializers.SerializerMethodField()
+    eshop_user_id = serializers.SerializerMethodField()
+    # CRITICAL FIX: Expose payuee_product_id in detail view too
+    payuee_product_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'slug', 'sku', 'source', 'payuee_product_id',
-            'description', 'short_description', 'specifications',
+            'eshop_user_id', 'description', 'short_description', 'specifications',
             'price', 'compare_at_price', 'discount_percentage', 'currency',
             'quantity', 'is_in_stock', 'is_low_stock', 'low_stock_threshold',
             'featured_image', 'images', 'category', 'status', 'is_featured',
@@ -207,6 +239,25 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
             'average_rating', 'review_count', 'reviews',
             'is_wishlisted', 'related_products', 'created_at', 'updated_at'
         ]
+
+    def get_eshop_user_id(self, obj):
+        """Return payuee_vendor_id as integer for Payuee API compatibility."""
+        if obj.payuee_vendor_id:
+            try:
+                return int(obj.payuee_vendor_id)
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    # CRITICAL FIX: Expose payuee_product_id as integer
+    def get_payuee_product_id(self, obj):
+        """Return payuee_product_id as integer for Payuee API compatibility."""
+        if obj.payuee_product_id:
+            try:
+                return int(obj.payuee_product_id)
+            except (ValueError, TypeError):
+                return None
+        return None
 
     def get_featured_image(self, obj):
         request = self.context.get('request')

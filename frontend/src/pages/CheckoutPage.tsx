@@ -1,12 +1,14 @@
 /**
  * Checkout Page with Payuee Location Integration
- */
+ * UPDATED: Uses pre-saved Payuee transaction PIN from user profile
+*/
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { CreditCard, Truck, Shield, MapPin, Loader2, ChevronDown, Lock } from 'lucide-react';
+import { CreditCard, Truck, Shield, MapPin, Loader2, ChevronDown, Lock, AlertTriangle } from 'lucide-react';
 import api from '../lib/api';
+import PayueePinModal from '../components/PayueePinModal';
 import { useCart } from '../contexts/CartContext';
 import { toast } from 'sonner';
 import { usePayueeLocation } from '../hooks/usePayueeLocation';
@@ -36,6 +38,35 @@ interface ShippingOption {
   company_name: string;
 }
 
+interface CartProduct {
+  id: number | string;
+  name: string;
+  slug: string;
+  price: number;
+  featured_image: string;
+  eshop_user_id?: number;
+  payuee_vendor_id?: number;
+  vendor_id?: number;
+  payuee_product_id?: number | null;
+  category?: { name: string; slug: string };
+}
+
+interface CartItem {
+  id: string;
+  product: CartProduct;
+  quantity: number;
+  total_price: number;
+  size?: string;
+}
+
+interface UserProfile {
+  email: string;
+  first_name: string;
+  last_name: string;
+  phone_number: string | null;
+  payuee_transaction_pin?: string | null;
+}
+
 export default function CheckoutPage() {
   const navigate = useNavigate();
   const { cart, refreshCart } = useCart();
@@ -44,6 +75,10 @@ export default function CheckoutPage() {
   const [summary, setSummary] = useState<CheckoutSummary | null>(null);
   const [shippingOptions, setShippingOptions] = useState<ShippingOption[]>([]);
   const [shippingError, setShippingError] = useState('');
+  const [calculatedTotal, setCalculatedTotal] = useState<number | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
+  const [showPinModal, setShowPinModal] = useState(false);
 
   const {
     states,
@@ -74,6 +109,47 @@ export default function CheckoutPage() {
     trans_code: '',
     email: '',
   });
+
+  // ── FETCH USER PROFILE (for saved Payuee PIN + prefill data) ──
+  useEffect(() => {
+    const fetchProfile = async () => {
+      try {
+        const response = await api.get('/auth/profile/');
+        const profile: UserProfile = response.data;
+        setUserProfile(profile);
+
+        // Prefill form with profile data
+        setFormData(prev => ({
+          ...prev,
+          email: profile.email || prev.email,
+          shipping_name: profile.first_name && profile.last_name 
+            ? `${profile.first_name} ${profile.last_name}` 
+            : prev.shipping_name,
+          shipping_phone: profile.phone_number || prev.shipping_phone,
+          // Use saved Payuee PIN — do NOT ask user to create new one
+          trans_code: profile.payuee_transaction_pin || '',
+        }));
+
+        // Redirect to PIN setup if no PIN saved
+        if (!profile.payuee_transaction_pin) {
+          toast.error('Please set your Payuee transaction PIN before checkout', {
+            duration: 5000,
+            action: {
+              label: 'Set PIN',
+              onClick: () => navigate('/profile/security'),
+            },
+          });
+        }
+      } catch (error) {
+        console.error('Failed to load profile:', error);
+        toast.error('Failed to load profile. Please try again.');
+      } finally {
+        setIsLoadingProfile(false);
+      }
+    };
+
+    fetchProfile();
+  }, [navigate]);
 
   useEffect(() => {
     fetchSummary();
@@ -109,6 +185,7 @@ export default function CheckoutPage() {
       shipping_longitude: '',
     }));
     setShippingOptions([]);
+    setCalculatedTotal(null);
   };
 
   const handleCitySelect = (city: any) => {
@@ -121,26 +198,53 @@ export default function CheckoutPage() {
       shipping_latitude: String(city.latitude),
       shipping_longitude: String(city.longitude),
     }));
-    // Auto-calculate shipping when city is selected
     calculateShipping(city);
   };
 
   const calculateShipping = async (city: any) => {
     if (!cart || cart.items.length === 0) return;
-    
+
     setIsCalculatingShipping(true);
     setShippingError('');
-    
-    try {
-      // Build cart items with vendor IDs from product data
-      const cartItemsForShipping = cart.items.map((item: any) => ({
-        product_id: item.product.id,
-        eshop_user_id: item.product.eshop_user_id || item.product.vendor_id,
-        quantity: item.quantity,
-      }));
 
-      // Get unique vendors
-      const vendors = [...new Set(cartItemsForShipping.map((item: any) => item.eshop_user_id))];
+    try {
+      const cartItemsForShipping = [];
+
+      for (const item of cart.items as CartItem[]) {
+        const eshopUserId: number | undefined = 
+          item.product.eshop_user_id 
+          || item.product.payuee_vendor_id 
+          || item.product.vendor_id;
+
+        const vendorId = parseInt(String(eshopUserId), 10);
+
+        if (!vendorId || isNaN(vendorId) || vendorId <= 0) {
+          setShippingError(`"${item.product.name}" is missing vendor info. Remove and re-add to cart.`);
+          setIsCalculatingShipping(false);
+          return;
+        }
+
+        if (!item.product.payuee_product_id) {
+          setShippingError(`"${item.product.name}" is not linked to Payuee.`);
+          setIsCalculatingShipping(false);
+          return;
+        }
+
+        const productId = parseInt(String(item.product.payuee_product_id), 10);
+        if (isNaN(productId) || productId <= 0) {
+          setShippingError(`"${item.product.name}" has invalid Payuee product ID.`);
+          setIsCalculatingShipping(false);
+          return;
+        }
+
+        cartItemsForShipping.push({
+          product_id: productId,
+          eshop_user_id: vendorId,
+          quantity: item.quantity,
+        });
+      }
+
+      const vendors = [...new Set(cartItemsForShipping.map((item) => item.eshop_user_id))];
 
       const response = await api.post('/payments/shipping-fees/', {
         vendors,
@@ -152,12 +256,26 @@ export default function CheckoutPage() {
       });
 
       if (response.data.success) {
-        setShippingOptions(response.data.shipping || []);
+        const options = response.data.shipping || [];
+        setShippingOptions(options);
+        setShippingError('');
+
+        const realShippingFee = options.reduce((a: number, b: ShippingOption) => a + b.fee, 0);
+        if (summary) {
+          const newTotal = summary.subtotal + summary.tax + realShippingFee - summary.discount;
+          setCalculatedTotal(newTotal);
+        }
       } else {
-        setShippingError(response.data.error || 'Failed to calculate shipping');
+        setShippingError(response.data.error || 'Shipping calculation failed');
+        setShippingOptions([]);
       }
+
     } catch (error: any) {
-      setShippingError(error.response?.data?.error || 'Failed to calculate shipping fees');
+      console.error('Shipping error:', error);
+      const msg = error.response?.data?.error || error.message || 'Network error. Is the server running?';
+      setShippingError(msg);
+      setShippingOptions([]);
+      setCalculatedTotal(null);
     } finally {
       setIsCalculatingShipping(false);
     }
@@ -165,29 +283,37 @@ export default function CheckoutPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!selectedCity) {
       toast.error('Please select your delivery location');
       return;
     }
-    
+
     if (shippingOptions.length === 0) {
       toast.error('Please wait for shipping calculation');
       return;
     }
-    
-    // FIX: Correct PIN validation - 6 digits only, no ₦ symbol
-    if (!formData.trans_code || formData.trans_code.length !== 6 || !/^\d{6}$/.test(formData.trans_code)) {
+
+    // ── VALIDATE PAYUEE PIN ──
+    const cleanTransCode = formData.trans_code.replace(/\D/g, '').slice(0, 6);
+    if (!cleanTransCode || cleanTransCode.length !== 6 || !/^\d{6}$/.test(cleanTransCode)) {
       toast.error('Please enter a valid 6-digit Payuee PIN');
       return;
     }
-    
+
+    // Block weak PINs (frontend guard — backend also validates)
+    const weakPins = ['000000', '111111', '222222', '333333', '444444', 
+                      '555555', '666666', '777777', '888888', '999999', '123456'];
+    if (weakPins.includes(cleanTransCode)) {
+      toast.error('Please choose a more secure 6-digit PIN (avoid sequential or repeated digits)');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      // Build customer object per Payuee API spec
       const customer = {
-        email: formData.email || cart.user_email,
+        email: formData.email || userProfile?.email || cart.user_email,
         first_name: formData.shipping_name.split(' ')[0] || formData.shipping_name,
         last_name: formData.shipping_name.split(' ').slice(1).join(' ') || '',
         phone_number: formData.shipping_phone,
@@ -203,16 +329,25 @@ export default function CheckoutPage() {
         save_address: true,
       };
 
-      // Build cart_items per Payuee API spec
-      const cartItems = cart.items.map((item: any) => ({
-        product_id: item.product.id,
-        cart_meta: {
-          quantity: item.quantity,
-          outfit_size: item.size || '',
-        },
-      }));
+      const cartItems = (cart.items as CartItem[]).map((item) => {
+        if (!item.product.payuee_product_id) {
+          throw new Error(`"${item.product.name}" is not linked to Payuee.`);
+        }
 
-      // Build shipping per Payuee API spec
+        const productId = parseInt(String(item.product.payuee_product_id), 10);
+        if (isNaN(productId) || productId <= 0) {
+          throw new Error(`"${item.product.name}" has invalid Payuee product ID.`);
+        }
+
+        return {
+          product_id: productId,
+          cart_meta: {
+            quantity: item.quantity,
+            outfit_size: item.size || '',
+          },
+        };
+      });
+
       const shipping = shippingOptions.map((opt: ShippingOption) => ({
         vendor_id: opt.vendor_id,
         fee: opt.fee,
@@ -221,9 +356,9 @@ export default function CheckoutPage() {
         company_name: opt.company_name,
       }));
 
-      // Call Payuee order creation
       const response = await api.post('/payments/orders/create/', {
-        trans_code: formData.trans_code,
+        trans_code: cleanTransCode,
+        webhook_response_url: window.location.origin + '/webhooks/payuee/',
         customer,
         cart_items: cartItems,
         shipping,
@@ -245,11 +380,24 @@ export default function CheckoutPage() {
       let message = 'Failed to place order';
       if (error.response?.data?.error) message = error.response.data.error;
       if (error.response?.data?.message) message = error.response.data.message;
+      if (error.message) message = error.message;
       toast.error(message);
     } finally {
       setIsLoading(false);
     }
   };
+
+  // ── GUARD: NO PAYUEE PIN ──
+  const hasPayueePin = !!userProfile?.payuee_transaction_pin;
+  const isPinValid = /^\d{6}$/.test(formData.trans_code);
+
+  if (isLoadingProfile) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <Loader2 className="w-8 h-8 animate-spin text-purple-600" />
+      </div>
+    );
+  }
 
   if (!cart || cart.items.length === 0) {
     return (
@@ -417,7 +565,30 @@ export default function CheckoutPage() {
                 </div>
                 <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Payment Authorization</h2>
               </div>
-              
+
+              {/* Warning if no PIN saved */}
+              {!hasPayueePin && (
+                <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <h4 className="text-sm font-semibold text-amber-800 dark:text-amber-300">Payuee PIN Required</h4>
+                      <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">
+                        You need to set your Payuee transaction PIN before placing an order. 
+                        This PIN is used to confirm delivery and release escrow funds.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowPinModal(true)}
+                        className="mt-3 px-4 py-2 bg-amber-600 text-white text-sm font-medium rounded-lg hover:bg-amber-700 transition-colors"
+                      >
+                        Set Payuee PIN
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Payuee Transaction PIN (6 digits) *
@@ -432,11 +603,19 @@ export default function CheckoutPage() {
                   pattern="\d{6}"
                   inputMode="numeric"
                   autoComplete="off"
-                  placeholder="Enter 6-digit PIN"
-                  className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 tracking-widest text-center text-lg font-mono"
+                  placeholder={hasPayueePin ? "Enter your 6-digit PIN" : "Set PIN in profile first"}
+                  disabled={!hasPayueePin}
+                  className={cn(
+                    "w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 tracking-widest text-center text-lg font-mono transition-all",
+                    !hasPayueePin 
+                      ? "bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-600 text-gray-400 cursor-not-allowed" 
+                      : "border-gray-200 dark:border-gray-600"
+                  )}
                 />
                 <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                  Your 6-digit Payuee escrow PIN required to authorize payment.
+                  {hasPayueePin 
+                    ? "Enter your saved Payuee transaction PIN to authorize this order."
+                    : "Please set your Payuee PIN in your profile settings before checkout."}
                 </p>
               </div>
             </motion.div>
@@ -450,8 +629,11 @@ export default function CheckoutPage() {
                 className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none" />
             </motion.div>
 
-            <button type="submit" disabled={isLoading || !selectedCity || shippingOptions.length === 0 || formData.trans_code.length !== 6}
-              className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition-colors">
+            <button 
+              type="submit" 
+              disabled={isLoading || !selectedCity || shippingOptions.length === 0 || !isPinValid || !hasPayueePin}
+              className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50 transition-colors"
+            >
               {isLoading ? <><Loader2 className="w-5 h-5 animate-spin" />Processing...</> : <><CreditCard className="w-5 h-5" />Place Order</>}
             </button>
           </form>
@@ -481,7 +663,7 @@ export default function CheckoutPage() {
                 </div>
                 <div className="flex justify-between text-gray-600 dark:text-gray-400">
                   <span>Shipping</span>
-                  <span className={shippingOptions.reduce((a, b) => a + b.fee, 0) > 0 ? '' : 'text-green-600'}>
+                  <span className={shippingOptions.reduce((a, b) => a + b.fee, 0) > 0 ? 'font-medium text-gray-900 dark:text-white' : 'text-green-600'}>
                     {shippingOptions.reduce((a, b) => a + b.fee, 0) > 0 
                       ? `₦${safeFixed(shippingOptions.reduce((a, b) => a + b.fee, 0), 2)}`
                       : 'Calculated at checkout'}
@@ -494,7 +676,7 @@ export default function CheckoutPage() {
                 <div className="flex justify-between pt-3 border-t border-gray-200 dark:border-gray-700">
                   <span className="font-semibold text-gray-900 dark:text-white">Total</span>
                   <span className="text-xl font-bold text-purple-600">
-                    ₦{safeFixed(summary.total + shippingOptions.reduce((a, b) => a + b.fee, 0), 2)}
+                    ₦{safeFixed(calculatedTotal ?? summary.total, 2)}
                   </span>
                 </div>
               </div>
@@ -512,6 +694,15 @@ export default function CheckoutPage() {
           </div>
         </div>
       </div>
+      <PayueePinModal
+        isOpen={showPinModal}
+        onClose={() => setShowPinModal(false)}
+        onPinSet={(pin) => {
+          setUserProfile(prev => prev ? { ...prev, payuee_transaction_pin: pin } : null);
+          setFormData(prev => ({ ...prev, trans_code: pin }));
+          toast.success('PIN set! You can now place your order.');
+        }}
+      />
     </div>
   );
 }

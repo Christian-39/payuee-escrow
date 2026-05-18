@@ -1,8 +1,9 @@
 /**
- * Type Definitions
+ * Type Definitions — Updated for Payuee Escrow Integration
  */
 
-// User Types
+// ── User Types ──
+
 export interface User {
   id: string;
   email: string;
@@ -28,7 +29,8 @@ export interface User {
   updated_at: string;
 }
 
-// Category Types
+// ── Category Types ──
+
 export interface Category {
   id: string;
   name: string;
@@ -41,7 +43,8 @@ export interface Category {
   is_active: boolean;
 }
 
-// Product Types
+// ── Product Types ──
+
 export interface Product {
   id: string;
   name: string;
@@ -49,6 +52,7 @@ export interface Product {
   sku: string | null;
   source: 'local' | 'payuee';
   payuee_product_id: string | null;
+  payuee_vendor_id?: string | number | null;  // Added for Payuee linkage
   description: string;
   short_description: string | null;
   specifications: Record<string, any>;
@@ -97,9 +101,15 @@ export interface ProductListItem {
   is_wishlisted: boolean;
   created_at: string;
   status: 'active' | 'draft' | 'archived' | string;
+  // Payuee-specific fields
+  eshop_user_id?: number;
+  payuee_vendor_id?: number | null;
+  payuee_product_id?: number | null;
+  source?: 'local' | 'payuee';
 }
 
-// Review Types
+// ── Review Types ──
+
 export interface ProductReview {
   id: string;
   user_name: string;
@@ -112,17 +122,20 @@ export interface ProductReview {
   created_at: string;
 }
 
-// Cart Types
+// ── Cart Types ──
+
 export interface CartItem {
   id: string;
   product: ProductListItem;
   quantity: number;
   total_price: number;
+  selected_size?: string;  // For clothing sizes
   created_at: string;
 }
 
 export interface Cart {
   id: string;
+  user_email?: string;  // Added for checkout
   items: CartItem[];
   total_items: number;
   subtotal: number;
@@ -130,12 +143,16 @@ export interface Cart {
   updated_at: string;
 }
 
-// Order Types
+// ── Order Types ──
+
 export interface OrderItem {
   id: string;
   product_name: string;
   product_sku: string | null;
   product_image: string | null;
+  payuee_product_id?: number | null;     // Added for Payuee tracking
+  payuee_vendor_id?: number | null;      // Added for Payuee tracking
+  selected_size?: string | null;         // Added for clothing
   quantity: number;
   unit_price: number;
   total_price: number;
@@ -144,17 +161,24 @@ export interface OrderItem {
 export interface Order {
   id: string;
   order_number: string;
-  status: 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled' | 'refunded';
-  payment_status: 'pending' | 'paid' | 'failed' | 'refunded';
-  shipping_status: 'pending' | 'processing' | 'shipped' | 'delivered';
-  payuee_order_id: string | null;
-  payuee_escrow_status: string | null;
+  status: 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled' | 'refunded' | 'on_hold' | 'payment_failed' | string;
+  payment_status: 'pending' | 'paid' | 'failed' | 'refunded' | 'escrow_locked' | 'on_hold' | string;
+  shipping_status: 'pending' | 'processing' | 'shipped' | 'delivered' | string;
+
+  // Payuee-specific fields
+  payuee_order_id: string | null;        // Legacy single ID (keep for compat)
+  payuee_order_ids?: (string | number)[];  // Multiple Payuee order IDs
+  payuee_escrow_status?: string | null;   // created, escrow_locked, confirmed, delivered, released, on_hold
+  payuee_error?: string | null;          // Error message from Payuee
+  primary_payuee_order_id?: number | null; // Primary Payuee order for tracking
+
   subtotal: number;
   shipping_cost: number;
   tax: number;
   discount: number;
   total: number;
   currency: string;
+
   shipping_name: string;
   shipping_address: string;
   shipping_city: string;
@@ -162,20 +186,26 @@ export interface Order {
   shipping_country: string;
   shipping_postal_code: string;
   shipping_phone: string;
+
   billing_name: string | null;
   billing_address: string | null;
   billing_city: string | null;
   billing_state: string | null;
   billing_country: string | null;
   billing_postal_code: string | null;
+
   customer_note: string | null;
   admin_note: string | null;
+
   tracking_number: string | null;
   carrier: string | null;
+
   shipped_at: string | null;
   delivered_at: string | null;
+
   items: OrderItem[];
   status_history: OrderStatusHistory[];
+
   created_at: string;
   updated_at: string;
 }
@@ -186,6 +216,11 @@ export interface OrderListItem {
   status: string;
   payment_status: string;
   shipping_status: string;
+
+  // Payuee-specific fields
+  payuee_escrow_status?: string | null;
+  payuee_order_ids?: (string | number)[];
+
   total: number;
   currency: string;
   item_count: number;
@@ -200,14 +235,59 @@ export interface OrderStatusHistory {
   created_at: string;
 }
 
-// Wishlist Types
+// ── Shipping Types ──
+
+export interface ShippingOption {
+  vendor_id: number;
+  fee: number;
+  method_id: string;
+  config_id: number;
+  company_name: string;
+  reason?: string;
+  logistics_source?: string;
+}
+
+// ── Wallet Types ──
+
+export interface WalletFundingAccount {
+  id?: number | string;
+  account_number: string;
+  account_name: string;
+  account_reference?: string;
+  bank_name: string;
+  bank_code?: string;
+  currency?: string;
+  reference?: string;
+  status?: string;
+}
+
+export interface WalletBalance {
+  wallet_balance_kobo: number;
+  wallet_balance: number;
+  currency: string;
+}
+
+// ── Location Types ──
+
+export interface CityWard {
+  state: string;
+  city: string;
+  ward: string;
+  latitude: number;
+  longitude: number;
+  display: string;
+}
+
+// ── Wishlist Types ──
+
 export interface WishlistItem {
   id: string;
   product: ProductListItem;
   created_at: string;
 }
 
-// Dashboard Types
+// ── Dashboard Types ──
+
 export interface DashboardStats {
   sales: {
     total: number;
@@ -237,15 +317,17 @@ export interface DashboardStats {
   };
 }
 
-// API Response Types
-export interface ApiResponse<T> {
+// ── API Response Types ──
+
+export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
   error?: string;
   message?: string;
+  status_code?: number;
 }
 
-export interface PaginatedResponse<T> {
+export interface PaginatedResponse<T = any> {
   count: number;
   next: string | null;
   previous: string | null;
