@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { CreditCard, Truck, Shield, MapPin, Loader2, ChevronDown, Lock, AlertTriangle } from 'lucide-react';
 import api from '../lib/api';
-import { PayueePinModal } from '../pages/PayueePinModal';
+import PayueePinModal from '../pages/PayueePinModal';
 import { useCart } from '../contexts/CartContext';
 import { toast } from 'sonner';
 import { usePayueeLocation } from '../hooks/usePayueeLocation';
