@@ -70,17 +70,23 @@ class AddToCartView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def create(self, request, *args, **kwargs):
+        # 1. Print exactly what the frontend is sending
+        print("--- RAW INCOMING DATA ---")
+        print(request.data)
+        
         serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        
+        if not serializer.is_valid():
+            # 2. Print exactly what fields are broken or missing
+            print("--- SERIALIZER ERROR DETAILS ---")
+            print(serializer.errors)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get or create cart
+        # ... rest of your existing working code remains the same ...
         cart, created = Cart.objects.get_or_create(user=request.user)
-
-        # Get product
         product_id = serializer.validated_data['product_id']
         product = get_object_or_404(Product, id=product_id, status='active')
-
-        # Check stock
+        
         quantity = serializer.validated_data['quantity']
         if product.track_inventory and product.quantity < quantity:
             return Response(
@@ -88,14 +94,12 @@ class AddToCartView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # CRITICAL FIX: Validate Payuee linkage before adding to cart
         if product.source == 'payuee' and not product.payuee_product_id:
             return Response(
                 {'error': 'This product is not properly linked to Payuee.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Add or update cart item
         cart_item, created = CartItem.objects.get_or_create(
             cart=cart,
             product=product,
@@ -103,7 +107,6 @@ class AddToCartView(generics.CreateAPIView):
         )
 
         if not created:
-            # Update quantity
             new_quantity = cart_item.quantity + quantity
             if product.track_inventory and product.quantity < new_quantity:
                 return Response(
