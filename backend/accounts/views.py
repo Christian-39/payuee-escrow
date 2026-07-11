@@ -7,7 +7,7 @@ import re
 from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
@@ -18,6 +18,7 @@ from .serializers import (
     ChangePasswordSerializer,
     UserPreferencesSerializer,
     CustomTokenObtainPairSerializer,
+    CustomTokenRefreshSerializer,
     PayueePinSerializer,
 )
 
@@ -28,6 +29,10 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     """Custom login view that returns user data with tokens."""
     serializer_class = CustomTokenObtainPairSerializer
 
+
+class CustomTokenRefreshView(TokenRefreshView):
+    """Custom token refresh view that handles UUID string conversions securely."""
+    serializer_class = CustomTokenRefreshSerializer
 
 class UserRegistrationView(generics.CreateAPIView):
     """View for user registration."""

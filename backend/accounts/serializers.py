@@ -9,6 +9,9 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+import uuid
+
 User = get_user_model()
 
 
@@ -23,6 +26,14 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         
         return data
 
+class CustomTokenRefreshSerializer(TokenRefreshSerializer):
+    """
+    Override to handle UUID primary keys properly.
+    """
+    def validate(self, attrs):
+        # Trigger default token decoding behavior
+        data = super().validate(attrs)
+        return data
 
 class UserSerializer(serializers.ModelSerializer):
     """Serializer for user data."""

@@ -5,7 +5,7 @@
 import { useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Eye, EyeOff, Mail, Lock, User, Store, ArrowRight, Check } from 'lucide-react';
+import { Eye, EyeOff, Mail, Lock, User, Store, ArrowRight } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
@@ -24,6 +24,10 @@ export default function RegisterPage() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
+  
+  // State to track field-specific backend validation errors
+  const [fieldErrors, setFieldErrors] = useState<{ [key: string]: string[] }>({});
+  
   const { register, isAuthenticated } = useAuth();
 
   // Redirect if already authenticated
@@ -33,10 +37,19 @@ export default function RegisterPage() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
+    // Clear the specific field error when user updates the text
+    if (fieldErrors[e.target.name]) {
+      setFieldErrors((prev) => {
+        const updated = { ...prev };
+        delete updated[e.target.name];
+        return updated;
+      });
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFieldErrors({}); // Clear existing errors
 
     // Validation
     if (!formData.first_name || !formData.last_name || !formData.email || !formData.password) {
@@ -62,8 +75,13 @@ export default function RegisterPage() {
     setIsLoading(true);
     try {
       await register(formData);
-    } catch (error) {
-      // Error handled in context
+    } catch (error: any) {
+      // Capture nested validation errors from Django response data
+      const errorData = error.response?.data;
+      if (errorData && typeof errorData === 'object' && !errorData.detail) {
+        setFieldErrors(errorData);
+        toast.error('Please correct the highlighted errors below.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -109,10 +127,16 @@ export default function RegisterPage() {
                     value={formData.first_name}
                     onChange={handleChange}
                     placeholder="John"
-                    className="w-full pl-12 pr-4 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all"
+                    className={cn(
+                      "w-full pl-12 pr-4 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all",
+                      fieldErrors.first_name && "border-red-500 focus:ring-red-500 dark:border-red-500"
+                    )}
                     required
                   />
                 </div>
+                {fieldErrors.first_name?.map((err, idx) => (
+                  <p key={idx} className="text-red-500 text-xs mt-1 font-medium">{err}</p>
+                ))}
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -125,10 +149,16 @@ export default function RegisterPage() {
                     value={formData.last_name}
                     onChange={handleChange}
                     placeholder="Doe"
-                    className="w-full px-4 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all"
+                    className={cn(
+                      "w-full px-4 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all",
+                      fieldErrors.last_name && "border-red-500 focus:ring-red-500 dark:border-red-500"
+                    )}
                     required
                   />
                 </div>
+                {fieldErrors.last_name?.map((err, idx) => (
+                  <p key={idx} className="text-red-500 text-xs mt-1 font-medium">{err}</p>
+                ))}
               </div>
             </div>
 
@@ -145,10 +175,16 @@ export default function RegisterPage() {
                   value={formData.email}
                   onChange={handleChange}
                   placeholder="john@example.com"
-                  className="w-full pl-12 pr-4 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all"
+                  className={cn(
+                    "w-full pl-12 pr-4 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all",
+                    fieldErrors.email && "border-red-500 focus:ring-red-500 dark:border-red-500"
+                  )}
                   required
                 />
               </div>
+              {fieldErrors.email?.map((err, idx) => (
+                <p key={idx} className="text-red-500 text-xs mt-1 font-medium">{err}</p>
+              ))}
             </div>
 
             {/* Username */}
@@ -164,9 +200,15 @@ export default function RegisterPage() {
                   value={formData.username}
                   onChange={handleChange}
                   placeholder="johndoe"
-                  className="w-full pl-12 pr-4 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all"
+                  className={cn(
+                    "w-full pl-12 pr-4 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all",
+                    fieldErrors.username && "border-red-500 focus:ring-red-500 dark:border-red-500"
+                  )}
                 />
               </div>
+              {fieldErrors.username?.map((err, idx) => (
+                <p key={idx} className="text-red-500 text-xs mt-1 font-medium">{err}</p>
+              ))}
             </div>
 
             {/* Password */}
@@ -182,7 +224,10 @@ export default function RegisterPage() {
                   value={formData.password}
                   onChange={handleChange}
                   placeholder="Min. 8 characters"
-                  className="w-full pl-12 pr-12 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all"
+                  className={cn(
+                    "w-full pl-12 pr-12 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all",
+                    fieldErrors.password && "border-red-500 focus:ring-red-500 dark:border-red-500"
+                  )}
                   required
                   minLength={8}
                 />
@@ -194,6 +239,10 @@ export default function RegisterPage() {
                   {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                 </button>
               </div>
+              {/* Field-specific validation loops */}
+              {fieldErrors.password?.map((err, idx) => (
+                <p key={idx} className="text-red-500 text-xs mt-1 font-medium">{err}</p>
+              ))}
             </div>
 
             {/* Confirm Password */}
@@ -209,7 +258,10 @@ export default function RegisterPage() {
                   value={formData.password_confirm}
                   onChange={handleChange}
                   placeholder="Confirm your password"
-                  className="w-full pl-12 pr-12 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all"
+                  className={cn(
+                    "w-full pl-12 pr-12 py-3.5 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all",
+                    fieldErrors.password_confirm && "border-red-500 focus:ring-red-500 dark:border-red-500"
+                  )}
                   required
                 />
                 <button
@@ -220,6 +272,9 @@ export default function RegisterPage() {
                   {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                 </button>
               </div>
+              {fieldErrors.password_confirm?.map((err, idx) => (
+                <p key={idx} className="text-red-500 text-xs mt-1 font-medium">{err}</p>
+              ))}
             </div>
 
             {/* Terms */}

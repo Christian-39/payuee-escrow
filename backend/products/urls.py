@@ -23,29 +23,29 @@ from .views import (
 )
 
 urlpatterns = [
-    # Categories
+    # 1. Categories (Specific routes first)
     path('categories/', CategoryListView.as_view(), name='category_list'),
     path('categories/with-products/', get_categories_with_products, name='categories_with_products'),
     path('categories/<str:slug>/', CategoryDetailView.as_view(), name='category_detail'),
       
-    # Wishlist
+    # 2. Wishlist (Must be above generic product paths)
     path('wishlist/', WishlistListView.as_view(), name='wishlist_list'),
     path('wishlist/add/', WishlistAddView.as_view(), name='wishlist_add'),
     path('wishlist/remove/<uuid:product_id>/', WishlistRemoveView.as_view(), name='wishlist_remove'),
     path('wishlist/toggle/<uuid:product_id>/', toggle_wishlist, name='toggle_wishlist'),
       
-    # Products
+    # 3. Base Products & Features
     path('', ProductListView.as_view(), name='product_list'),
     path('featured/', FeaturedProductsView.as_view(), name='featured_products'),
     path('search/', search_products, name='product_search'),
-    path('<str:slug>/', ProductDetailView.as_view(), name='product_detail'),
-    path('<str:slug>/related/', RelatedProductsView.as_view(), name='related_products'),
     
-    # Reviews
-    path('<str:slug>/reviews/', ProductReviewListView.as_view(), name='product_reviews'),
-    path('<str:slug>/reviews/create/', ProductReviewCreateView.as_view(), name='create_review'),
-
-    # Admin
+    # 4. Admin
     path('admin/products/', AdminProductListCreateView.as_view(), name='admin_product_list_create'),
     path('admin/products/<uuid:id>/', AdminProductDetailView.as_view(), name='admin_product_detail'),
+
+    # 5. Generic Slugs (CRITICAL: Keep these at the absolute bottom!)
+    path('<str:slug>/', ProductDetailView.as_view(), name='product_detail'),
+    path('<str:slug>/related/', RelatedProductsView.as_view(), name='related_products'),
+    path('<str:slug>/reviews/', ProductReviewListView.as_view(), name='product_reviews'),
+    path('<str:slug>/reviews/create/', ProductReviewCreateView.as_view(), name='create_review'),
 ]
