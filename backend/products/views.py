@@ -1,20 +1,22 @@
-
 # ============================================================
-# FILE 9: products/views.py (FIXED - ensure payuee_product_id is exposed)
+# FILE 9: products/views.py (UPDATED - Core App Catalog View)
 # ============================================================
 """
 Views for the products app.
-Handles product catalog, search, wishlist, and reviews.
+Handles product catalog, search, wishlist, and reviews using an external API.
 """
+
+import logging
+import requests
+from django.db.models import Avg, Count
+from django.shortcuts import get_object_or_404
+from django.core.cache import cache
+from django_filters.rest_framework import DjangoFilterBackend
 
 from rest_framework import generics, status, permissions, filters
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
-from django.db.models import Q, Avg, Count
-from django.shortcuts import get_object_or_404
-from django_filters.rest_framework import DjangoFilterBackend
-import logging
 
 from .models import Category, Product, ProductReview, Wishlist, ProductView
 from .serializers import (
@@ -29,6 +31,9 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+PAYUEE_API_URL = "https://escrow.payuee.com/v1/products"  # Tracks active environment structure
+CACHE_TTL = 600  # 10 minutes
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -58,7 +63,7 @@ class CategoryDetailView(generics.RetrieveAPIView):
 
 
 # ─────────────────────────────────────────────────────────────
-# PRODUCT VIEWS — FAST: No live Payuee calls here
+# PRODUCT VIEWS — INTEGRATED WITH PAYUEE EXTERNAL API
 # ─────────────────────────────────────────────────────────────
 
 class ProductListView(generics.ListAPIView):
@@ -66,31 +71,42 @@ class ProductListView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
     
-    def get_queryset(self):
-        # FAST: Only local DB query, no external API calls
-        queryset = Product.objects.filter(status='active')
-        
-        # Apply filters from query params
-        category_slug = self.request.query_params.get('category')
-        if category_slug:
-            queryset = queryset.filter(category__slug=category_slug)
-        
-        min_price = self.request.query_params.get('min_price')
-        max_price = self.request.query_params.get('max_price')
-        if min_price:
-            queryset = queryset.filter(price__gte=min_price)
-        if max_price:
-            queryset = queryset.filter(price__lte=max_price)
-        
-        in_stock = self.request.query_params.get('in_stock')
-        if in_stock == 'true':
-            queryset = queryset.filter(quantity__gt=0)
-        
-        # Apply sorting
-        ordering = self.request.query_params.get('ordering', '-created_at')
-        queryset = queryset.order_by(ordering)
-        
-        return queryset.select_related('category')
+    def list(self, request, *args, **kwargs):
+        category_slug = request.query_params.get('category', '')
+        min_price = request.query_params.get('min_price', '')
+        max_price = request.query_params.get('max_price', '')
+        in_stock = request.query_params.get('in_stock', '')
+        ordering = request.query_params.get('ordering', '-created_at')
+        page = request.query_params.get('page', '1')
+
+        # Cache key mappings
+        cache_key = f"payuee_catalog_list_{category_slug}_{min_price}_{max_price}_{in_stock}_{ordering}_{page}"
+        products_data = cache.get(cache_key)
+
+        if not products_data:
+            params = {
+                'category': category_slug,
+                'min_price': min_price,
+                'max_price': max_price,
+                'in_stock': in_stock,
+                'ordering': ordering,
+                'page': page
+            }
+            params = {k: v for k, v in params.items() if v}
+
+            try:
+                response = requests.get(PAYUEE_API_URL, params=params, timeout=5)
+                response.raise_for_status()
+                products_data = response.json()
+                cache.set(cache_key, products_data, CACHE_TTL)
+            except requests.RequestException as e:
+                logger.error(f"Payuee API Catalog Fetch Failed: {e}")
+                return Response(
+                    {"error": "Failed to fetch listings from external product service."},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
+
+        return Response(products_data, status=status.HTTP_200_OK)
 
 
 class ProductDetailView(generics.RetrieveAPIView):
@@ -108,7 +124,6 @@ class ProductDetailView(generics.RetrieveAPIView):
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         
-        # Track product view
         ProductView.objects.create(
             product=instance,
             user=request.user if request.user.is_authenticated else None,
@@ -121,7 +136,6 @@ class ProductDetailView(generics.RetrieveAPIView):
         return Response(serializer.data)
     
     def get_client_ip(self, request):
-        """Get client IP address."""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
         if x_forwarded_for:
             ip = x_forwarded_for.split(',')[0]
@@ -161,73 +175,51 @@ class RelatedProductsView(generics.ListAPIView):
 
 
 # ─────────────────────────────────────────────────────────────
-# PRODUCT SEARCH
+# PRODUCT SEARCH — INTEGRATED WITH PAYUEE EXTERNAL API
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def search_products(request):
-    """Search products with advanced filters."""
+    """Search products via external service with advanced filters."""
     serializer = ProductSearchSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     
     data = serializer.validated_data
     query = data.get('query', '')
-    category_id = data.get('category')
-    min_price = data.get('min_price')
-    max_price = data.get('max_price')
+    category_id = data.get('category', '')
+    min_price = data.get('min_price', '')
+    max_price = data.get('max_price', '')
     sort_by = data.get('sort_by', 'relevance')
-    
-    # Base queryset — LOCAL ONLY, no Payuee calls
-    queryset = Product.objects.filter(status='active')
-    
-    # Apply search query
-    if query:
-        queryset = queryset.filter(
-            Q(name__icontains=query) |
-            Q(description__icontains=query) |
-            Q(short_description__icontains=query) |
-            Q(sku__icontains=query)
-        )
-    
-    # Apply category filter
-    if category_id:
-        queryset = queryset.filter(category_id=category_id)
-    
-    # Apply price filters
-    if min_price:
-        queryset = queryset.filter(price__gte=min_price)
-    if max_price:
-        queryset = queryset.filter(price__lte=max_price)
-    
-    # Apply sorting
-    if sort_by == 'price_low':
-        queryset = queryset.order_by('price')
-    elif sort_by == 'price_high':
-        queryset = queryset.order_by('-price')
-    elif sort_by == 'newest':
-        queryset = queryset.order_by('-created_at')
-    elif sort_by == 'rating':
-        queryset = queryset.order_by('-average_rating')
-    
-    # Paginate results
-    paginator = StandardResultsSetPagination()
-    page = paginator.paginate_queryset(queryset, request)
-    
-    if page is not None:
-        serializer = ProductListSerializer(
-            page, 
-            many=True, 
-            context={'request': request}
-        )
-        return paginator.get_paginated_response(serializer.data)
-    
-    serializer = ProductListSerializer(
-        queryset, 
-        many=True, 
-        context={'request': request}
-    )
-    return Response(serializer.data)
+    page = request.query_params.get('page', '1')
+
+    cache_key = f"payuee_search_query_{query}_{category_id}_{min_price}_{max_price}_{sort_by}_{page}"
+    search_results = cache.get(cache_key)
+
+    if not search_results:
+        params = {
+            'search': query,
+            'category': category_id,
+            'min_price': min_price,
+            'max_price': max_price,
+            'sort_by': sort_by,
+            'page': page
+        }
+        params = {k: v for k, v in params.items() if v}
+
+        try:
+            response = requests.get(PAYUEE_API_URL, params=params, timeout=5)
+            response.raise_for_status()
+            search_results = response.json()
+            cache.set(cache_key, search_results, CACHE_TTL)
+        except requests.RequestException as e:
+            logger.error(f"Payuee Search Endpoint Failure: {e}")
+            return Response(
+                {"error": "Product catalog query service is temporarily offline."},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+    return Response(search_results, status=status.HTTP_200_OK)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -257,7 +249,6 @@ class WishlistAddView(generics.CreateAPIView):
         
         product = serializer.validated_data['product']
         
-        # Check if already in wishlist
         wishlist_item, created = Wishlist.objects.get_or_create(
             user=request.user,
             product=product
@@ -353,7 +344,6 @@ class ProductReviewCreateView(generics.CreateAPIView):
         product_slug = self.kwargs.get('slug')
         product = get_object_or_404(Product, slug=product_slug)
         
-        # Check if user has already reviewed this product
         existing_review = ProductReview.objects.filter(
             product=product,
             user=self.request.user
@@ -364,7 +354,6 @@ class ProductReviewCreateView(generics.CreateAPIView):
                 'You have already reviewed this product.'
             )
         
-        # Check if user has purchased this product
         from orders.models import OrderItem
         is_verified = OrderItem.objects.filter(
             order__user=self.request.user,
@@ -378,13 +367,10 @@ class ProductReviewCreateView(generics.CreateAPIView):
             is_verified_purchase=is_verified
         )
         
-        # Update product rating
         self.update_product_rating(product)
-        
         return review
     
     def update_product_rating(self, product):
-        """Update product average rating."""
         ratings = ProductReview.objects.filter(
             product=product,
             is_approved=True
