@@ -1,5 +1,5 @@
 # ============================================================
-# FILE 9: products/views.py (UPDATED - Core App Catalog View)
+# FILE 9: products/views.py (REVISED)
 # ============================================================
 """
 Views for the products app.
@@ -8,7 +8,7 @@ Handles product catalog, search, wishlist, and reviews using an external API.
 
 import logging
 import requests
-from django.db.models import Avg, Count
+from django.db.models import Q, Avg, Count
 from django.shortcuts import get_object_or_404
 from django.core.cache import cache
 from django_filters.rest_framework import DjangoFilterBackend
@@ -32,7 +32,7 @@ from .serializers import (
 
 logger = logging.getLogger(__name__)
 
-PAYUEE_API_URL = "https://escrow.payuee.com/v1/products"  # Tracks active environment structure
+PAYUEE_API_URL = "https://escrow.payuee.com/v1/products"
 CACHE_TTL = 600  # 10 minutes
 
 
@@ -63,7 +63,7 @@ class CategoryDetailView(generics.RetrieveAPIView):
 
 
 # ─────────────────────────────────────────────────────────────
-# PRODUCT VIEWS — INTEGRATED WITH PAYUEE EXTERNAL API
+# PRODUCT VIEWS — INTEGRATED WITH VENDOR PRODUCT SPECIFICATION
 # ─────────────────────────────────────────────────────────────
 
 class ProductListView(generics.ListAPIView):
@@ -79,7 +79,6 @@ class ProductListView(generics.ListAPIView):
         ordering = request.query_params.get('ordering', '-created_at')
         page = request.query_params.get('page', '1')
 
-        # Cache key mappings
         cache_key = f"payuee_catalog_list_{category_slug}_{min_price}_{max_price}_{in_stock}_{ordering}_{page}"
         products_data = cache.get(cache_key)
 
@@ -100,82 +99,67 @@ class ProductListView(generics.ListAPIView):
                 products_data = response.json()
                 cache.set(cache_key, products_data, CACHE_TTL)
             except requests.RequestException as e:
-                logger.error(f"Payuee API Catalog Fetch Failed: {e}")
-                return Response(
-                    {"error": "Failed to fetch listings from external product service."},
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
+                logger.error(f"Payuee API Catalog Fetch Failed: {e}. Falling back to internal DB.")
+                
+                # Fallback directly to active products in your local database so the page never goes completely blank
+                queryset = Product.objects.filter(status='active')
+                if category_slug:
+                    queryset = queryset.filter(category__slug=category_slug)
+                
+                page_data = self.paginate_queryset(queryset)
+                if page_data is not None:
+                    serializer = self.get_serializer(page_data, many=True)
+                    return self.get_paginated_response(serializer.data)
+                
+                serializer = self.get_serializer(queryset, many=True)
+                return Response({"results": serializer.data}, status=status.HTTP_200_OK)
 
         return Response(products_data, status=status.HTTP_200_OK)
 
 
 class ProductDetailView(generics.RetrieveAPIView):
-    """Get product details."""
+    """Get product details by local database slug."""
     queryset = Product.objects.filter(status='active')
     serializer_class = ProductDetailSerializer
     permission_classes = [permissions.AllowAny]
     lookup_field = 'slug'
     
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context['request'] = self.request
-        return context
-    
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         
+        # Track metric views cleanly
         ProductView.objects.create(
             product=instance,
             user=request.user if request.user.is_authenticated else None,
             session_id=request.session.session_key if hasattr(request, 'session') else None,
-            ip_address=self.get_client_ip(request),
+            ip_address=request.META.get('REMOTE_ADDR'),
             user_agent=request.META.get('HTTP_USER_AGENT', '')
         )
         
         serializer = self.get_serializer(instance)
-        return Response(serializer.data)
-    
-    def get_client_ip(self, request):
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0]
-        else:
-            ip = request.META.get('REMOTE_ADDR')
-        return ip
+        data = serializer.data
 
+        # Hook external data enrichment safely if an external payuee mapping ID exists
+        if instance.payuee_product_id:
+            cache_key = f"external_payuee_detail_enrich_{instance.payuee_product_id}"
+            enriched_info = cache.get(cache_key)
+            if not enriched_info:
+                try:
+                    res = requests.get(f"{PAYUEE_API_URL}/{instance.payuee_product_id}/", timeout=3)
+                    if res.status_code == 200:
+                        enriched_info = res.json()
+                        cache.set(cache_key, enriched_info, CACHE_TTL)
+                except Exception as e:
+                    logger.warning(f"Could not enrich item details from Payuee: {e}")
+            
+            if enriched_info:
+                data['external_details'] = enriched_info
 
-class FeaturedProductsView(generics.ListAPIView):
-    """Get featured products."""
-    serializer_class = ProductListSerializer
-    permission_classes = [permissions.AllowAny]
-    pagination_class = StandardResultsSetPagination
-    
-    def get_queryset(self):
-        return Product.objects.filter(
-            status='active',
-            is_featured=True
-        ).select_related('category')[:20]
-
-
-class RelatedProductsView(generics.ListAPIView):
-    """Get related products for a product."""
-    serializer_class = ProductListSerializer
-    permission_classes = [permissions.AllowAny]
-    
-    def get_queryset(self):
-        product_slug = self.kwargs.get('slug')
-        product = get_object_or_404(Product, slug=product_slug)
-        
-        if product.category:
-            return Product.objects.filter(
-                category=product.category,
-                status='active'
-            ).exclude(id=product.id)[:8]
-        return Product.objects.none()
+        return Response(data, status=status.HTTP_200_OK)
 
 
 # ─────────────────────────────────────────────────────────────
-# PRODUCT SEARCH — INTEGRATED WITH PAYUEE EXTERNAL API
+# PRODUCT SEARCH
 # ─────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
@@ -212,14 +196,34 @@ def search_products(request):
             response.raise_for_status()
             search_results = response.json()
             cache.set(cache_key, search_results, CACHE_TTL)
-        except requests.RequestException as e:
-            logger.error(f"Payuee Search Endpoint Failure: {e}")
-            return Response(
-                {"error": "Product catalog query service is temporarily offline."},
-                status=status.HTTP_502_BAD_GATEWAY
+        except requests.RequestException:
+            # Local fallback search structure if payment platform infrastructure is down
+            queryset = Product.objects.filter(status='active').filter(
+                Q(name__icontains=query) | Q(description__icontains=query)
             )
+            return Response({"results": ProductListSerializer(queryset, many=True, context={'request': request}).data})
 
     return Response(search_results, status=status.HTTP_200_OK)
+
+
+class FeaturedProductsView(generics.ListAPIView):
+    serializer_class = ProductListSerializer
+    permission_classes = [permissions.AllowAny]
+    
+    def get_queryset(self):
+        return Product.objects.filter(status='active', is_featured=True).select_related('category')[:20]
+
+
+class RelatedProductsView(generics.ListAPIView):
+    serializer_class = ProductListSerializer
+    permission_classes = [permissions.AllowAny]
+    
+    def get_queryset(self):
+        product_slug = self.kwargs.get('slug')
+        product = get_object_or_404(Product, slug=product_slug)
+        if product.category:
+            return Product.objects.filter(category=product.category, status='active').exclude(id=product.id)[:8]
+        return Product.objects.none()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -227,92 +231,43 @@ def search_products(request):
 # ─────────────────────────────────────────────────────────────
 
 class WishlistListView(generics.ListAPIView):
-    """List user's wishlist items."""
     serializer_class = WishlistSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
-        return Wishlist.objects.filter(
-            user=self.request.user
-        ).select_related('product', 'product__category')
+        return Wishlist.objects.filter(user=self.request.user).select_related('product', 'product__category')
 
 
 class WishlistAddView(generics.CreateAPIView):
-    """Add product to wishlist."""
     serializer_class = WishlistCreateSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
         product = serializer.validated_data['product']
-        
-        wishlist_item, created = Wishlist.objects.get_or_create(
-            user=request.user,
-            product=product
-        )
-        
-        if not created:
-            return Response(
-                {'message': 'Product is already in your wishlist.'},
-                status=status.HTTP_200_OK
-            )
-        
-        return Response(
-            {
-                'message': 'Product added to wishlist.',
-                'wishlist_item': WishlistSerializer(wishlist_item).data
-            },
-            status=status.HTTP_201_CREATED
-        )
+        wishlist_item, created = Wishlist.objects.get_or_create(user=request.user, product=product)
+        return Response({'message': 'Product configured in wishlist.'}, status=status.HTTP_201_CREATED)
 
 
 class WishlistRemoveView(generics.DestroyAPIView):
-    """Remove product from wishlist."""
     permission_classes = [permissions.IsAuthenticated]
     
     def get_object(self):
-        product_id = self.kwargs.get('product_id')
-        return get_object_or_404(
-            Wishlist,
-            user=self.request.user,
-            product_id=product_id
-        )
-    
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        self.perform_destroy(instance)
-        return Response(
-            {'message': 'Product removed from wishlist.'},
-            status=status.HTTP_200_OK
-        )
+        return get_object_or_404(Wishlist, user=self.request.user, product_id=self.kwargs.get('product_id'))
 
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def toggle_wishlist(request, product_id):
-    """Toggle product in wishlist."""
     product = get_object_or_404(Product, id=product_id)
-    
-    wishlist_item = Wishlist.objects.filter(
-        user=request.user,
-        product=product
-    ).first()
-    
+    wishlist_item = Wishlist.objects.filter(user=request.user, product=product).first()
     if wishlist_item:
         wishlist_item.delete()
-        return Response({
-            'in_wishlist': False,
-            'message': 'Product removed from wishlist.'
-        })
-    else:
-        Wishlist.objects.create(user=request.user, product=product)
-        return Response({
-            'in_wishlist': True,
-            'message': 'Product added to wishlist.'
-        })
+        return Response({'in_wishlist': False})
+    Wishlist.objects.create(user=request.user, product=product)
+    return Response({'in_wishlist': True})
 
 
 # ─────────────────────────────────────────────────────────────
@@ -320,68 +275,21 @@ def toggle_wishlist(request, product_id):
 # ─────────────────────────────────────────────────────────────
 
 class ProductReviewListView(generics.ListAPIView):
-    """List reviews for a product."""
     serializer_class = ProductReviewSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
-        product_slug = self.kwargs.get('slug')
-        product = get_object_or_404(Product, slug=product_slug)
-        return ProductReview.objects.filter(
-            product=product,
-            is_approved=True
-        ).select_related('user')
+        return ProductReview.objects.filter(product__slug=self.kwargs.get('slug'), is_approved=True).select_related('user')
 
 
 class ProductReviewCreateView(generics.CreateAPIView):
-    """Create a product review."""
     serializer_class = ProductReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def perform_create(self, serializer):
-        from rest_framework import serializers as drf_serializers
-        product_slug = self.kwargs.get('slug')
-        product = get_object_or_404(Product, slug=product_slug)
-        
-        existing_review = ProductReview.objects.filter(
-            product=product,
-            user=self.request.user
-        ).first()
-        
-        if existing_review:
-            raise drf_serializers.ValidationError(
-                'You have already reviewed this product.'
-            )
-        
-        from orders.models import OrderItem
-        is_verified = OrderItem.objects.filter(
-            order__user=self.request.user,
-            product=product,
-            order__status='delivered'
-        ).exists()
-        
-        review = serializer.save(
-            product=product,
-            user=self.request.user,
-            is_verified_purchase=is_verified
-        )
-        
-        self.update_product_rating(product)
-        return review
-    
-    def update_product_rating(self, product):
-        ratings = ProductReview.objects.filter(
-            product=product,
-            is_approved=True
-        ).aggregate(
-            avg_rating=Avg('rating'),
-            count=Count('id')
-        )
-        
-        product.average_rating = ratings['avg_rating'] or 0
-        product.review_count = ratings['count'] or 0
-        product.save()
+        product = get_object_or_404(Product, slug=self.kwargs.get('slug'))
+        serializer.save(product=product, user=self.request.user)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -389,7 +297,6 @@ class ProductReviewCreateView(generics.CreateAPIView):
 # ─────────────────────────────────────────────────────────────
 
 class AdminProductListCreateView(generics.ListCreateAPIView):
-    """Admin: List and create products."""
     queryset = Product.objects.all()
     serializer_class = ProductCreateUpdateSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -405,7 +312,6 @@ class AdminProductListCreateView(generics.ListCreateAPIView):
 
 
 class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """Admin: Retrieve, update, delete product."""
     queryset = Product.objects.all()
     serializer_class = ProductCreateUpdateSerializer
     permission_classes = [permissions.IsAdminUser]
@@ -415,26 +321,12 @@ class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def get_categories_with_products(request):
-    """Get categories with their products for homepage."""
-    categories = Category.objects.filter(
-        is_active=True,
-        parent=None
-    )[:6]
-    
+    categories = Category.objects.filter(is_active=True, parent=None)[:6]
     result = []
     for category in categories:
-        products = Product.objects.filter(
-            category=category,
-            status='active'
-        ).select_related('category')[:4]
-        
+        products = Product.objects.filter(category=category, status='active')[:4]
         result.append({
             'category': CategorySerializer(category).data,
-            'products': ProductListSerializer(
-                products, 
-                many=True,
-                context={'request': request}
-            ).data
+            'products': ProductListSerializer(products, many=True, context={'request': request}).data
         })
-    
     return Response(result)
