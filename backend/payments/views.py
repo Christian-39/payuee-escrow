@@ -1,5 +1,5 @@
 # ============================================================
-# FILE 7: payments/views.py (UPDATED - Caching & Product Passthrough)
+# FILE 7: payments/views.py (UPDATED - Caching & Admin Views Added)
 # ============================================================
 """
 Views for the payments app.
@@ -276,6 +276,26 @@ def get_payuee_cities(request):
 
 
 # ─────────────────────────────────────────────────────────────
+# ADMIN VIEWS
+# ─────────────────────────────────────────────────────────────
+
+class AdminTransactionListView(generics.ListAPIView):
+    """Admin endpoint to monitor system transaction logs."""
+    serializer_class = TransactionSerializer
+    permission_classes = [permissions.IsAdminUser]
+    pagination_class = StandardResultsSetPagination
+    queryset = Transaction.objects.all().select_related('user', 'order')
+
+
+class AdminTransactionDetailView(generics.RetrieveAPIView):
+    """Admin endpoint to inspect individual transaction profiles."""
+    serializer_class = TransactionSerializer
+    permission_classes = [permissions.IsAdminUser]
+    queryset = Transaction.objects.all().select_related('user', 'order')
+    lookup_field = 'id'
+
+
+# ─────────────────────────────────────────────────────────────
 # PRODUCTS (Passthrough with Caching Hooks)
 # ─────────────────────────────────────────────────────────────
 
@@ -283,14 +303,13 @@ def get_payuee_cities(request):
 @permission_classes([permissions.IsAuthenticated])
 def products_list(request):
     from django.core.cache import cache
-    # Serialize dict parameters cleanly to track cache variations
     cache_str = str(sorted(request.data.items())) if request.data else 'all'
     cache_key = f"payuee_passthrough_list_{hash(cache_str)}"
     
     result = cache.get(cache_key)
     if not result:
         client = get_payuee_client()
-        result = client.get_store_products(**request.data)
+        result = client.search_products(**request.data)
         cache.set(cache_key, result, CACHE_TTL)
     return Response(result)
 
@@ -305,7 +324,7 @@ def products_search(request):
     result = cache.get(cache_key)
     if not result:
         client = get_payuee_client()
-        result = client.get_store_products(**request.data)
+        result = client.search_products(**request.data)
         cache.set(cache_key, result, CACHE_TTL)
     return Response(result)
 
