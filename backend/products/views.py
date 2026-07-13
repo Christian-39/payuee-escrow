@@ -11,6 +11,7 @@ import requests
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.core.cache import cache
+from django.http import Http404
 
 from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
@@ -116,16 +117,47 @@ class ProductListView(generics.ListAPIView):
 
 
 class ProductDetailView(generics.RetrieveAPIView):
-    """Get product details by local database slug."""
-    queryset = Product.objects.filter(status='active')
+    """Get product details by local database slug with external passthrough resilience."""
+    queryset = Product.objects.all()
     serializer_class = ProductDetailSerializer
     permission_classes = [permissions.AllowAny]
     lookup_field = 'slug'
     
-    def retrieve(self, request, *args, **kwargs):
-        instance = self.get_object()
+    def get_object(self):
+        slug = self.kwargs.get('slug')
         
-        # Track analytics view metric safely
+        # 1. Try active local products
+        product = Product.objects.filter(slug=slug, status='active').first()
+        if product:
+            return product
+            
+        # 2. Relax status constraints to catch draft/inactive entries
+        product = Product.objects.filter(slug=slug).first()
+        if product:
+            return product
+            
+        # 3. Fallback check for external ID strings matching lookup parameter
+        product = Product.objects.filter(payuee_product_id=slug).first()
+        if product:
+            return product
+            
+        raise Http404("Product profile does not exist locally.")
+    
+    def retrieve(self, request, *args, **kwargs):
+        try:
+            instance = self.get_object()
+        except Http404:
+            # Absolute baseline fallback if product is purely hosted on external Payuee side
+            slug_param = self.kwargs.get('slug')
+            try:
+                res = requests.get(f"{PAYUEE_API_URL}/{slug_param}/", timeout=4)
+                if res.status_code == 200:
+                    return Response(res.json(), status=status.HTTP_200_OK)
+            except Exception:
+                pass
+            raise Http404("Product profile not found anywhere.")
+
+        # Track view analytics logs safely
         try:
             ProductView.objects.create(
                 product=instance,
@@ -143,7 +175,7 @@ class ProductDetailView(generics.RetrieveAPIView):
         # Explicitly build related products fallback inside response dict
         related_qs = Product.objects.none()
         if instance.category:
-            related_qs = Product.objects.filter(category=instance.category, status='active').exclude(id=instance.id)[:4]
+            related_qs = Product.objects.filter(category=instance.category).exclude(id=instance.id)[:4]
         
         data['related_products'] = ProductListSerializer(
             related_qs, 
@@ -222,7 +254,7 @@ class FeaturedProductsView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]
     
     def get_queryset(self):
-        return Product.objects.filter(status='active', is_featured=True).select_related('category')[:20]
+        return Product.objects.filter(is_featured=True).select_related('category')[:20]
 
 
 class RelatedProductsView(generics.ListAPIView):
@@ -231,9 +263,9 @@ class RelatedProductsView(generics.ListAPIView):
     
     def get_queryset(self):
         product_slug = self.kwargs.get('slug')
-        product = get_object_or_404(Product, slug=product_slug)
-        if product.category:
-            return Product.objects.filter(category=product.category, status='active').exclude(id=product.id)[:8]
+        product = Product.objects.filter(slug=product_slug).first()
+        if product and product.category:
+            return Product.objects.filter(category=product.category).exclude(id=product.id)[:8]
         return Product.objects.none()
 
 
@@ -335,7 +367,7 @@ def get_categories_with_products(request):
     categories = Category.objects.filter(is_active=True, parent=None)[:6]
     result = []
     for category in categories:
-        products = Product.objects.filter(category=category, status='active')[:4]
+        products = Product.objects.filter(category=category)[:4]
         result.append({
             'category': CategorySerializer(category).data,
             'products': ProductListSerializer(products, many=True, context={'request': request}).data
