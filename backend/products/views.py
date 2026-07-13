@@ -1,19 +1,18 @@
 # ============================================================
-# FILE 9: products/views.py (REVISED)
+# FILE 9: products/views.py (FIXED)
 # ============================================================
 """
 Views for the products app.
-Handles product catalog, search, wishlist, and reviews using an external API.
+Handles product catalog, search, wishlist, and reviews with strict field guarantees.
 """
 
 import logging
 import requests
-from django.db.models import Q, Avg, Count
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.core.cache import cache
-from django_filters.rest_framework import DjangoFilterBackend
 
-from rest_framework import generics, status, permissions, filters
+from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
@@ -63,7 +62,7 @@ class CategoryDetailView(generics.RetrieveAPIView):
 
 
 # ─────────────────────────────────────────────────────────────
-# PRODUCT VIEWS — INTEGRATED WITH VENDOR PRODUCT SPECIFICATION
+# PRODUCT VIEWS
 # ─────────────────────────────────────────────────────────────
 
 class ProductListView(generics.ListAPIView):
@@ -101,7 +100,6 @@ class ProductListView(generics.ListAPIView):
             except requests.RequestException as e:
                 logger.error(f"Payuee API Catalog Fetch Failed: {e}. Falling back to internal DB.")
                 
-                # Fallback directly to active products in your local database so the page never goes completely blank
                 queryset = Product.objects.filter(status='active')
                 if category_slug:
                     queryset = queryset.filter(category__slug=category_slug)
@@ -127,19 +125,33 @@ class ProductDetailView(generics.RetrieveAPIView):
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         
-        # Track metric views cleanly
-        ProductView.objects.create(
-            product=instance,
-            user=request.user if request.user.is_authenticated else None,
-            session_id=request.session.session_key if hasattr(request, 'session') else None,
-            ip_address=request.META.get('REMOTE_ADDR'),
-            user_agent=request.META.get('HTTP_USER_AGENT', '')
-        )
+        # Track analytics view metric safely
+        try:
+            ProductView.objects.create(
+                product=instance,
+                user=request.user if request.user.is_authenticated else None,
+                session_id=request.session.session_key if hasattr(request, 'session') else None,
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+        except Exception as e:
+            logger.warning(f"Failed to write analytics view: {e}")
         
         serializer = self.get_serializer(instance)
         data = serializer.data
 
-        # Hook external data enrichment safely if an external payuee mapping ID exists
+        # Explicitly build related products fallback inside response dict
+        related_qs = Product.objects.none()
+        if instance.category:
+            related_qs = Product.objects.filter(category=instance.category, status='active').exclude(id=instance.id)[:4]
+        
+        data['related_products'] = ProductListSerializer(
+            related_qs, 
+            many=True, 
+            context={'request': request}
+        ).data
+
+        # Merge external payuee meta objects safely if map exists
         if instance.payuee_product_id:
             cache_key = f"external_payuee_detail_enrich_{instance.payuee_product_id}"
             enriched_info = cache.get(cache_key)
@@ -197,7 +209,6 @@ def search_products(request):
             search_results = response.json()
             cache.set(cache_key, search_results, CACHE_TTL)
         except requests.RequestException:
-            # Local fallback search structure if payment platform infrastructure is down
             queryset = Product.objects.filter(status='active').filter(
                 Q(name__icontains=query) | Q(description__icontains=query)
             )
@@ -318,7 +329,7 @@ class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     lookup_field = 'id'
 
 
-@api_view(['GET'])
+@admin_api_view = api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def get_categories_with_products(request):
     categories = Category.objects.filter(is_active=True, parent=None)[:6]
