@@ -329,7 +329,7 @@ class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     lookup_field = 'id'
 
 
-@admin_api_view = api_view(['GET'])
+@api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def get_categories_with_products(request):
     categories = Category.objects.filter(is_active=True, parent=None)[:6]
