@@ -1,11 +1,9 @@
-
-# Generate all the modified files based on the analysis
-
 # ============================================================
-# FILE 1: products/serializers.py (FIXED)
+# FILE: products/serializers.py (DISABLED PAYUEE — LOCAL ONLY)
 # ============================================================
 """
 Serializers for the products app.
+ONLY LOCAL PRODUCTS ARE DISPLAYED. Payuee fields removed from output.
 """
 
 from rest_framework import serializers
@@ -44,7 +42,7 @@ class BaseProductMixin:
         if 'compare_at_price' in data and data['compare_at_price'] is not None:
             data['compare_at_price'] = float(data['compare_at_price'])
             
-        # Handle Rating (The main culprit for the toFixed error)
+        # Handle Rating
         data['average_rating'] = float(data.get('average_rating') or 0.0)
         
         # Handle Discount
@@ -81,7 +79,8 @@ class CategorySerializer(serializers.ModelSerializer, BaseProductMixin):
         return CategorySerializer(subcategories, many=True, context=self.context).data
 
     def get_product_count(self, obj):
-        return obj.products.filter(status='active').count()
+        # LOCAL ONLY: Count only local products
+        return obj.products.filter(status='active', source='local').count()
 
 
 class SimpleCategorySerializer(serializers.ModelSerializer):
@@ -139,9 +138,6 @@ class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
     )
     is_wishlisted = serializers.SerializerMethodField()
     featured_image = serializers.SerializerMethodField()
-    eshop_user_id = serializers.SerializerMethodField()
-    # CRITICAL FIX: Expose payuee_product_id so frontend can use it for Payuee API calls
-    payuee_product_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -149,37 +145,13 @@ class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
             'id', 'name', 'slug', 'sku', 'price', 'compare_at_price',
             'discount_percentage', 'featured_image', 'category',
             'is_in_stock', 'average_rating', 'review_count',
-            'is_featured', 'eshop_user_id', 'payuee_product_id',
-            'is_wishlisted', 'created_at', 'source'
+            'is_featured', 'is_wishlisted', 'created_at', 'source'
         ]
-
-    def get_eshop_user_id(self, obj):
-        """Return payuee_vendor_id as integer for Payuee API compatibility."""
-        if obj.payuee_vendor_id:
-            try:
-                return int(obj.payuee_vendor_id)
-            except (ValueError, TypeError):
-                return None
-        return None
-
-    # CRITICAL FIX: Expose payuee_product_id as integer
-    def get_payuee_product_id(self, obj):
-        """Return payuee_product_id as integer for Payuee API compatibility."""
-        if obj.payuee_product_id:
-            try:
-                return int(obj.payuee_product_id)
-            except (ValueError, TypeError):
-                return None
-        return None
 
     def get_featured_image(self, obj):
         request = self.context.get('request')
         
-        # If it's a Payuee product with URL
-        if obj.source == 'payuee' and obj.featured_image:
-            return obj.featured_image  # Already a full URL
-        
-        # If it's a local product with ImageField
+        # Local product with ImageField
         if obj.images:
             try:
                 url = obj.images.url
@@ -223,15 +195,12 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
     specifications = serializers.JSONField()
     related_products = serializers.SerializerMethodField()
     featured_image = serializers.SerializerMethodField()
-    eshop_user_id = serializers.SerializerMethodField()
-    # CRITICAL FIX: Expose payuee_product_id in detail view too
-    payuee_product_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
-            'id', 'name', 'slug', 'sku', 'source', 'payuee_product_id',
-            'eshop_user_id', 'description', 'short_description', 'specifications',
+            'id', 'name', 'slug', 'sku', 'source',
+            'description', 'short_description', 'specifications',
             'price', 'compare_at_price', 'discount_percentage', 'currency',
             'quantity', 'is_in_stock', 'is_low_stock', 'low_stock_threshold',
             'featured_image', 'images', 'category', 'status', 'is_featured',
@@ -240,33 +209,10 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
             'is_wishlisted', 'related_products', 'created_at', 'updated_at'
         ]
 
-    def get_eshop_user_id(self, obj):
-        """Return payuee_vendor_id as integer for Payuee API compatibility."""
-        if obj.payuee_vendor_id:
-            try:
-                return int(obj.payuee_vendor_id)
-            except (ValueError, TypeError):
-                return None
-        return None
-
-    # CRITICAL FIX: Expose payuee_product_id as integer
-    def get_payuee_product_id(self, obj):
-        """Return payuee_product_id as integer for Payuee API compatibility."""
-        if obj.payuee_product_id:
-            try:
-                return int(obj.payuee_product_id)
-            except (ValueError, TypeError):
-                return None
-        return None
-
     def get_featured_image(self, obj):
         request = self.context.get('request')
         
-        # If Payuee product, return the URL as-is (it's already a full URL)
-        if obj.source == 'payuee' and obj.featured_image:
-            return obj.featured_image
-        
-        # If local product with ImageField
+        # Local product with ImageField
         if obj.images:
             try:
                 url = obj.images.url
@@ -288,12 +234,13 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
     def get_related_products(self, obj):
         """Get related products from same category."""
         if obj.category:
+            # LOCAL ONLY: Only local related products
             related = Product.objects.filter(
                 category=obj.category,
-                status='active'
+                status='active',
+                source='local'
             ).exclude(id=obj.id)[:4]
             
-            # Debug log
             logger.info(f"Found {related.count()} related products for {obj.id}")
             
             return ProductListSerializer(
@@ -318,8 +265,8 @@ class ProductCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = [
-            'name', 'slug', 'sku', 'source', 'payuee_product_id',
-            'category', 'description', 'short_description', 'specifications',
+            'name', 'slug', 'sku', 'category', 'description', 
+            'short_description', 'specifications',
             'price', 'compare_at_price', 'cost_price', 'currency',
             'quantity', 'low_stock_threshold', 'track_inventory',
             'featured_image', 'images', 'status', 'is_featured',
@@ -335,6 +282,11 @@ class ProductCreateUpdateSerializer(serializers.ModelSerializer):
                 "A product with this slug already exists."
             )
         return value
+    
+    def create(self, validated_data):
+        # Force source to local when creating via API
+        validated_data['source'] = 'local'
+        return super().create(validated_data)
 
 
 # =========================
