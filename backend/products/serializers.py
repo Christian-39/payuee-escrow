@@ -1,9 +1,6 @@
-# ============================================================
-# FILE: products/serializers.py (DISABLED PAYUEE — LOCAL ONLY)
-# ============================================================
 """
 Serializers for the products app.
-ONLY LOCAL PRODUCTS ARE DISPLAYED. Payuee fields removed from output.
+Handles both local DB products and live Payuee products.
 """
 
 from rest_framework import serializers
@@ -13,12 +10,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# =========================
-# MIXINS & HELPERS
-# =========================
 
 class BaseProductMixin:
-    """Reusable helper for images and numeric safety."""
     
     def get_full_image_url(self, request, field):
         if field:
@@ -30,34 +23,21 @@ class BaseProductMixin:
         return None
 
     def fix_numeric_fields(self, data):
-        """
-        Forces numeric fields to be returned as floats/numbers 
-        to prevent JavaScript 'toFixed' errors on the frontend.
-        """
-        # Handle Price
         if 'price' in data and data['price'] is not None:
             data['price'] = float(data['price'])
         
-        # Handle Compare Price
         if 'compare_at_price' in data and data['compare_at_price'] is not None:
             data['compare_at_price'] = float(data['compare_at_price'])
             
-        # Handle Rating
         data['average_rating'] = float(data.get('average_rating') or 0.0)
         
-        # Handle Discount
         if 'discount_percentage' in data and data['discount_percentage'] is not None:
             data['discount_percentage'] = float(data['discount_percentage'])
 
         return data
 
 
-# =========================
-# CATEGORY SERIALIZERS
-# =========================
-
 class CategorySerializer(serializers.ModelSerializer, BaseProductMixin):
-    """Serializer for categories."""
     
     subcategories = serializers.SerializerMethodField()
     product_count = serializers.SerializerMethodField()
@@ -79,24 +59,17 @@ class CategorySerializer(serializers.ModelSerializer, BaseProductMixin):
         return CategorySerializer(subcategories, many=True, context=self.context).data
 
     def get_product_count(self, obj):
-        # LOCAL ONLY: Count only local products
         return obj.products.filter(status='active', source='local').count()
 
 
 class SimpleCategorySerializer(serializers.ModelSerializer):
-    """Simple category serializer for product listings."""
     
     class Meta:
         model = Category
         fields = ['id', 'name', 'slug']
 
 
-# =========================
-# PRODUCT REVIEW
-# =========================
-
 class ProductReviewSerializer(serializers.ModelSerializer, BaseProductMixin):
-    """Serializer for product reviews."""
     
     user_name = serializers.CharField(source='user.full_name', read_only=True)
     user_image = serializers.SerializerMethodField()
@@ -117,27 +90,25 @@ class ProductReviewSerializer(serializers.ModelSerializer, BaseProductMixin):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        # Ensure rating in reviews is also a float
         data['rating'] = float(data.get('rating') or 0.0)
         return data
 
 
-# =========================
-# PRODUCT LIST
-# =========================
-
 class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
-    """Serializer for product list view."""
+    """
+    Serializer that handles BOTH:
+    - Local Product model instances (from DB)
+    - Plain dicts from Payuee API (live fetch, not saved)
+    """
     
-    category = SimpleCategorySerializer(read_only=True)
-    is_in_stock = serializers.BooleanField(read_only=True)
-    discount_percentage = serializers.DecimalField(
-        max_digits=5, 
-        decimal_places=2, 
-        read_only=True
-    )
+    category = SimpleCategorySerializer(read_only=True, required=False)
+    is_in_stock = serializers.BooleanField(read_only=True, required=False)
+    discount_percentage = serializers.SerializerMethodField()
     is_wishlisted = serializers.SerializerMethodField()
     featured_image = serializers.SerializerMethodField()
+    payuee_product_id = serializers.SerializerMethodField()
+    eshop_user_id = serializers.SerializerMethodField()
+    source = serializers.CharField(read_only=True, required=False)
 
     class Meta:
         model = Product
@@ -145,13 +116,50 @@ class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
             'id', 'name', 'slug', 'sku', 'price', 'compare_at_price',
             'discount_percentage', 'featured_image', 'category',
             'is_in_stock', 'average_rating', 'review_count',
-            'is_featured', 'is_wishlisted', 'created_at', 'source'
+            'is_featured', 'payuee_product_id', 'eshop_user_id',
+            'is_wishlisted', 'created_at', 'source'
         ]
+
+    def get_discount_percentage(self, obj):
+        # Handle both Product model and plain dict
+        if isinstance(obj, dict):
+            return obj.get('discount_percentage', 0)
+        if obj.compare_at_price and obj.compare_at_price > obj.price:
+            discount = ((obj.compare_at_price - obj.price) / obj.compare_at_price) * 100
+            return round(discount, 2)
+        return 0
+
+    def get_payuee_product_id(self, obj):
+        if isinstance(obj, dict):
+            return obj.get('payuee_product_id')
+        if obj.payuee_product_id:
+            try:
+                return int(obj.payuee_product_id)
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    def get_eshop_user_id(self, obj):
+        if isinstance(obj, dict):
+            return obj.get('eshop_user_id')
+        if obj.payuee_vendor_id:
+            try:
+                return int(obj.payuee_vendor_id)
+            except (ValueError, TypeError):
+                return None
+        return None
 
     def get_featured_image(self, obj):
         request = self.context.get('request')
         
-        # Local product with ImageField
+        # Handle plain dict (from Payuee live fetch)
+        if isinstance(obj, dict):
+            return obj.get('featured_image')
+        
+        # Handle Product model
+        if obj.source == 'payuee' and obj.featured_image:
+            return obj.featured_image
+        
         if obj.images:
             try:
                 url = obj.images.url
@@ -164,6 +172,8 @@ class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
     def get_is_wishlisted(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
+            if isinstance(obj, dict):
+                return False  # Can't wishlist live Payuee products
             return Wishlist.objects.filter(
                 user=request.user, 
                 product=obj
@@ -175,32 +185,33 @@ class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
         return self.fix_numeric_fields(data)
 
 
-# =========================
-# PRODUCT DETAIL
-# =========================
-
 class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
-    """Serializer for product detail view."""
+    """
+    Handles both local Product instances and Payuee dicts.
+    """
     
-    category = CategorySerializer(read_only=True)
-    reviews = ProductReviewSerializer(many=True, read_only=True)
-    is_in_stock = serializers.BooleanField(read_only=True)
-    is_low_stock = serializers.BooleanField(read_only=True)
-    discount_percentage = serializers.DecimalField(
-        max_digits=5, 
-        decimal_places=2, 
-        read_only=True
-    )
+    category = CategorySerializer(read_only=True, required=False)
+    reviews = serializers.SerializerMethodField()
+    is_in_stock = serializers.BooleanField(read_only=True, required=False)
+    is_low_stock = serializers.BooleanField(read_only=True, required=False)
+    discount_percentage = serializers.SerializerMethodField()
     is_wishlisted = serializers.SerializerMethodField()
-    specifications = serializers.JSONField()
+    specifications = serializers.JSONField(required=False)
     related_products = serializers.SerializerMethodField()
     featured_image = serializers.SerializerMethodField()
+    payuee_product_id = serializers.SerializerMethodField()
+    eshop_user_id = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+    short_description = serializers.SerializerMethodField()
+    quantity = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
-            'id', 'name', 'slug', 'sku', 'source',
-            'description', 'short_description', 'specifications',
+            'id', 'name', 'slug', 'sku', 'source', 'payuee_product_id',
+            'eshop_user_id', 'description', 'short_description', 'specifications',
             'price', 'compare_at_price', 'discount_percentage', 'currency',
             'quantity', 'is_in_stock', 'is_low_stock', 'low_stock_threshold',
             'featured_image', 'images', 'category', 'status', 'is_featured',
@@ -209,10 +220,64 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
             'is_wishlisted', 'related_products', 'created_at', 'updated_at'
         ]
 
+    def _get_attr(self, obj, attr, default=None):
+        """Helper to get attr from dict or model."""
+        if isinstance(obj, dict):
+            return obj.get(attr, default)
+        return getattr(obj, attr, default)
+
+    def get_description(self, obj):
+        return self._get_attr(obj, 'description', '')
+
+    def get_short_description(self, obj):
+        return self._get_attr(obj, 'short_description', '')
+
+    def get_quantity(self, obj):
+        return self._get_attr(obj, 'quantity', 0)
+
+    def get_currency(self, obj):
+        return self._get_attr(obj, 'currency', 'NGN')
+
+    def get_status(self, obj):
+        return self._get_attr(obj, 'status', 'active')
+
+    def get_discount_percentage(self, obj):
+        if isinstance(obj, dict):
+            return obj.get('discount_percentage', 0)
+        if obj.compare_at_price and obj.compare_at_price > obj.price:
+            discount = ((obj.compare_at_price - obj.price) / obj.compare_at_price) * 100
+            return round(discount, 2)
+        return 0
+
+    def get_payuee_product_id(self, obj):
+        if isinstance(obj, dict):
+            return obj.get('payuee_product_id')
+        if obj.payuee_product_id:
+            try:
+                return int(obj.payuee_product_id)
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    def get_eshop_user_id(self, obj):
+        if isinstance(obj, dict):
+            return obj.get('eshop_user_id')
+        if obj.payuee_vendor_id:
+            try:
+                return int(obj.payuee_vendor_id)
+            except (ValueError, TypeError):
+                return None
+        return None
+
     def get_featured_image(self, obj):
         request = self.context.get('request')
         
-        # Local product with ImageField
+        if isinstance(obj, dict):
+            return obj.get('featured_image')
+        
+        if obj.source == 'payuee' and obj.featured_image:
+            return obj.featured_image
+        
         if obj.images:
             try:
                 url = obj.images.url
@@ -222,9 +287,23 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
         
         return None
 
+    def get_reviews(self, obj):
+        # Live Payuee products have no reviews
+        if isinstance(obj, dict):
+            return []
+        
+        reviews = ProductReview.objects.filter(
+            product=obj,
+            is_approved=True
+        ).select_related('user')[:10]
+        
+        return ProductReviewSerializer(reviews, many=True, context=self.context).data
+
     def get_is_wishlisted(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
+            if isinstance(obj, dict):
+                return False
             return Wishlist.objects.filter(
                 user=request.user, 
                 product=obj
@@ -232,16 +311,15 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
         return False
 
     def get_related_products(self, obj):
-        """Get related products from same category."""
+        if isinstance(obj, dict):
+            return []  # Live Payuee products have no related products
+        
         if obj.category:
-            # LOCAL ONLY: Only local related products
             related = Product.objects.filter(
                 category=obj.category,
                 status='active',
                 source='local'
             ).exclude(id=obj.id)[:4]
-            
-            logger.info(f"Found {related.count()} related products for {obj.id}")
             
             return ProductListSerializer(
                 related, 
@@ -255,12 +333,7 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
         return self.fix_numeric_fields(data)
 
 
-# =========================
-# CREATE / UPDATE
-# =========================
-
 class ProductCreateUpdateSerializer(serializers.ModelSerializer):
-    """Serializer for creating and updating products."""
     
     class Meta:
         model = Product
@@ -284,17 +357,11 @@ class ProductCreateUpdateSerializer(serializers.ModelSerializer):
         return value
     
     def create(self, validated_data):
-        # Force source to local when creating via API
         validated_data['source'] = 'local'
         return super().create(validated_data)
 
 
-# =========================
-# WISHLIST
-# =========================
-
 class WishlistSerializer(serializers.ModelSerializer):
-    """Serializer for wishlist items."""
     
     product = ProductListSerializer(read_only=True)
 
@@ -304,19 +371,13 @@ class WishlistSerializer(serializers.ModelSerializer):
 
 
 class WishlistCreateSerializer(serializers.ModelSerializer):
-    """Serializer for adding items to wishlist."""
     
     class Meta:
         model = Wishlist
         fields = ['product']
 
 
-# =========================
-# SEARCH
-# =========================
-
 class ProductSearchSerializer(serializers.Serializer):
-    """Serializer for product search."""
     
     query = serializers.CharField(required=True, min_length=2)
     category = serializers.UUIDField(required=False, allow_null=True)
