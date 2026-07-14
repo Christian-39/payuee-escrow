@@ -35,7 +35,7 @@ class PayueeClient:
         body: str = '',
         timestamp: Optional[str] = None
     ) -> tuple:
-        """Generate HMAC SHA256 signature."""
+        """Generate HMAC SHA256 signature for API requests."""
         if timestamp is None:
             timestamp = str(int(time.time()))
 
@@ -53,13 +53,23 @@ class PayueeClient:
         self,
         signature: str,
         timestamp: str,
-        method: str,
-        path: str,
         body: str = ''
     ) -> bool:
-        """Verify incoming webhook signature from Payuee."""
-        expected_sig, _ = self.generate_signature(method, path, body, timestamp)
-        return hmac.compare_digest(signature, expected_sig)
+        """Verify incoming webhook signature from Payuee.
+        
+        Payuee webhook format: timestamp + "." + raw_body
+        Signature is prefixed with "sha256="
+        """
+        payload = f"{timestamp}.{body}"
+        
+        expected_sig = hmac.new(
+            self.api_secret.encode('utf-8'),
+            payload.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        expected_sig = f"sha256={expected_sig}"
+        
+        return hmac.compare_digest(expected_sig, signature)
 
     def make_request(
         self,
@@ -160,7 +170,7 @@ class PayueeClient:
             "category": kwargs.get('category', 'all'),
             "user_lat": kwargs.get('user_lat', 6.5244),
             "user_lon": kwargs.get('user_lon', 3.3792),
-            "max_distance": kwargs.get('max_distance', 100),
+            "max_distance": kwargs.get('max_distance', 10),
             "min_price": kwargs.get('min_price', 0),
             "max_price": kwargs.get('max_price', 100000),
             "min_weight": kwargs.get('min_weight', 0),
@@ -172,7 +182,7 @@ class PayueeClient:
             data['tags'] = kwargs['tags']
 
         result = self.make_request('POST', '/v1/products', data)
-        
+
         if not result.get('success') and result.get('status_code') == 405:
             import urllib.parse
             query_string = urllib.parse.urlencode(data)
@@ -204,9 +214,12 @@ class PayueeClient:
 
     def search_products(self, **kwargs) -> Dict[str, Any]:
         """Search products with advanced filters."""
+        limit = int(kwargs.get('limit', 50))
+        limit = max(5, min(limit, 50))
+        
         data = {
             "search_term": kwargs.get('search_term', ''),
-            "limit": max(int(kwargs.get('limit', 100)), 100),
+            "limit": limit,
             "category": kwargs.get('category', 'all'),
             "min_price": kwargs.get('min_price', 0.0),
             "max_price": kwargs.get('max_price', 100000.0),
