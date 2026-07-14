@@ -1,5 +1,5 @@
 # ============================================================
-# FILE: payments/views.py (UPDATED - Compatible with new payuee_client)
+# FILE: payments/views.py (FIXED - Compatible with new payuee_client)
 # ============================================================
 """
 Views for the payments app.
@@ -10,6 +10,7 @@ import logging
 import uuid
 import re
 import json
+import requests  # FIX: Added missing import
 
 from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
@@ -92,11 +93,24 @@ def get_wallet_balance(request):
                 'currency': data.get('currency', 'NGN'),
             })
         else:
+            status_code = result.get('status_code', 400)
+            
+            # FIX: Better handling for service unavailable errors
+            if status_code in [502, 503, 504]:
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Payment service temporarily unavailable. Please try again.',
+                        'status_code': status_code
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+            
             return Response(
                 {
                     'success': False,
                     'error': result.get('error', 'Failed to fetch balance'),
-                    'status_code': result.get('status_code', 400)
+                    'status_code': status_code
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -122,9 +136,11 @@ def get_wallet_funding_details(request):
             return Response({'success': False, 'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
 
         data = result.get('data', {})
-        funding_accounts = data.get('success', [])
+        
+        # FIX: Payuee returns "wallet_funding_account" (single object), not "success" (array)
+        funding_account = data.get('wallet_funding_account')
 
-        if not funding_accounts:
+        if not funding_account:
             return Response(
                 {
                     'success': False,
@@ -133,24 +149,18 @@ def get_wallet_funding_details(request):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        primary_account = funding_accounts[0]
         raw_balance = data.get('wallet_balance', 0)
         return Response({
             'success': True,
             'wallet_funding_account': {
-                'id': primary_account.get('ID'),
-                'account_number': primary_account.get('AccountNumber'),
-                'account_name': primary_account.get('AccountName'),
-                'account_reference': primary_account.get('AccountReference'),
-                'bank_name': primary_account.get('BankName'),
-                'bank_code': primary_account.get('BankCode'),
-                'currency': primary_account.get('Currency', 'NGN'),
-                'reference': primary_account.get('Reference'),
-                'status': primary_account.get('Status'),
+                'account_number': funding_account.get('account_number'),
+                'account_name': funding_account.get('account_name'),
+                'bank_name': funding_account.get('bank_name'),
+                'bank_code': funding_account.get('bank_code'),
             },
             'wallet_balance_kobo': raw_balance,
             'wallet_balance': raw_balance / 100.0,
-            'currency': data.get('currency', 'NGN'),
+            'currency': 'NGN',
         })
     except Exception as e:
         logger.exception("Error in wallet funding details view")
@@ -250,16 +260,26 @@ def calculate_shipping(request):
 
     logger.info(f"INCOMING SHIPPING REQUEST: {json.dumps(data, indent=2)}")
 
+    # FIX: Flatten cart_items to match Payuee API format
+    # Payuee expects: {"product_id": 12, "eshop_user_id": 5, "quantity": 2}
+    flat_cart_items = []
+    for item in cart_items:
+        flat_item = {
+            "product_id": item['product_id'],
+            "eshop_user_id": item.get('eshop_user_id') or item.get('vendor_id'),
+            "quantity": item.get('quantity', item.get('cart_meta', {}).get('quantity', 1))
+        }
+        flat_cart_items.append(flat_item)
+
     try:
         client = get_payuee_client()
-        # FIXED: Pass correct kwargs matching payuee_client.get_shipping_fees()
         result = client.get_shipping_fees(
             vendors=data['vendors'],
             state=data['state'],
             city=data['city'],
             latitude=float(data['latitude']),
             longitude=float(data['longitude']),
-            cart_items=data['cart_items']
+            cart_items=flat_cart_items  # FIX: Pass flattened format
         )
 
         logger.info(f"PAYUEE SHIPPING RESULT: {result}")
@@ -399,7 +419,6 @@ def create_payuee_order(request):
     }
     logger.info(f"PAYUEE ORDER PAYLOAD: {json.dumps(debug_payload, indent=2)}")
 
-    # FIXED: Call create_order with correct kwargs (not raw request.data)
     try:
         client = get_payuee_client()
         result = client.create_order(
@@ -519,17 +538,16 @@ def products_list(request):
     Uses get_store_products (not search_products) for browsing.
     """
     from django.core.cache import cache
-    
+
     # Build cache key from request data
     cache_data = dict(request.data) if request.data else {}
     cache_data['endpoint'] = 'list'
     cache_str = json.dumps(cache_data, sort_keys=True)
     cache_key = f"payuee_passthrough_list_{hash(cache_str)}"
-    
+
     result = cache.get(cache_key)
     if not result:
         client = get_payuee_client()
-        # FIXED: Use get_store_products for listing, not search_products
         result = client.get_store_products(**request.data)
         cache.set(cache_key, result, CACHE_TTL)
     return Response(result)
@@ -543,12 +561,12 @@ def products_search(request):
     Uses search_products for keyword/filter search.
     """
     from django.core.cache import cache
-    
+
     cache_data = dict(request.data) if request.data else {}
     cache_data['endpoint'] = 'search'
     cache_str = json.dumps(cache_data, sort_keys=True)
     cache_key = f"payuee_passthrough_search_{hash(cache_str)}"
-    
+
     result = cache.get(cache_key)
     if not result:
         client = get_payuee_client()
@@ -562,7 +580,7 @@ def products_search(request):
 def product_detail(request, product_id):
     from django.core.cache import cache
     cache_key = f"payuee_passthrough_detail_{product_id}"
-    
+
     result = cache.get(cache_key)
     if not result:
         client = get_payuee_client()
