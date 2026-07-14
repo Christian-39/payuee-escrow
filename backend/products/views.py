@@ -1,7 +1,6 @@
 """
 Views for the products app.
-Fetches Payuee products LIVE from API without saving to database.
-Only manually-added local products are stored in DB.
+Handles product catalog, search, wishlist, and reviews.
 """
 
 from rest_framework import generics, status, permissions, filters
@@ -10,6 +9,8 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q, Avg, Count
 from django.shortcuts import get_object_or_404
+from django_filters.rest_framework import DjangoFilterBackend
+from payments.payuee_client import get_payuee_client
 import logging
 
 from .models import Category, Product, ProductReview, Wishlist, ProductView
@@ -24,80 +25,16 @@ from .serializers import (
     ProductSearchSerializer
 )
 
-# Import Payuee client for live fetching
-from payments.payuee_client import PayueeClient, get_payuee_client
-
 logger = logging.getLogger(__name__)
 
-
 class StandardResultsSetPagination(PageNumberPagination):
+    """Standard pagination class."""
     page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
 
 
-# ─────────────────────────────────────────────────────────────
-# HELPER: Convert Payuee product dict to Product-like object
-# ─────────────────────────────────────────────────────────────
-
-def payuee_product_to_dict(p):
-    """
-    Convert a Payuee API product dict into a format
-    that matches our Product serializer fields.
-    No database saving — just format for display.
-    """
-    # Get first image URL
-    featured_image = None
-    if p.get('product_image') and len(p['product_image']) > 0:
-        image_path = p['product_image'][0].get('url', '')
-        if image_path:
-            featured_image = f"https://payuee.com/image/{image_path}"
-    
-    # Calculate discount
-    selling_price = float(p.get('selling_price', 0))
-    initial_cost = float(p.get('initial_cost', selling_price))
-    discount = 0
-    if initial_cost > selling_price:
-        discount = round(((initial_cost - selling_price) / initial_cost) * 100, 2)
-    
-    return {
-        'id': f"payuee_{p.get('ID')}",  # Prefix to avoid ID collision
-        'name': p.get('title', 'Unknown Product'),
-        'slug': p.get('product_url_id', f"product-{p.get('ID')}"),
-        'sku': str(p.get('ID', '')),
-        'price': selling_price,
-        'compare_at_price': initial_cost if initial_cost != selling_price else None,
-        'discount_percentage': discount,
-        'featured_image': featured_image,
-        'category': None,  # Will be handled separately if needed
-        'is_in_stock': p.get('stock_remaining', 0) > 0,
-        'average_rating': 0.0,
-        'review_count': p.get('product_review_count', 0),
-        'is_featured': p.get('featured', False),
-        'is_wishlisted': False,  # Can't wishlist non-saved products
-        'created_at': None,
-        'source': 'payuee',
-        'payuee_product_id': p.get('ID'),
-        'eshop_user_id': p.get('eshop_user_id'),
-        'description': p.get('description', ''),
-        'short_description': (p.get('description', '') or '')[:200],
-        'quantity': p.get('stock_remaining', 0),
-        'currency': 'NGN',
-        'status': 'active' if p.get('stock_remaining', 0) > 0 else 'out_of_stock',
-        'specifications': {},
-        'images': [],
-        'is_low_stock': False,
-        'low_stock_threshold': 10,
-        'meta_title': None,
-        'meta_description': None,
-        'meta_keywords': None,
-    }
-
-
-# ─────────────────────────────────────────────────────────────
-# CATEGORY VIEWS
-# ─────────────────────────────────────────────────────────────
-
+# Category Views
 class CategoryListView(generics.ListAPIView):
     """List all active categories."""
     queryset = Category.objects.filter(is_active=True, parent=None)
@@ -113,24 +50,36 @@ class CategoryDetailView(generics.RetrieveAPIView):
     lookup_field = 'slug'
 
 
-# ─────────────────────────────────────────────────────────────
-# PRODUCT LIST — LIVE FETCH FROM PAYUEE + LOCAL DB
-# ─────────────────────────────────────────────────────────────
-
+# Product Views
 class ProductListView(generics.ListAPIView):
-    """
-    List products: fetches Payuee products LIVE from API
-    and combines with local products. Nothing is saved to DB.
-    """
     serializer_class = ProductListSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
-        # Only return LOCAL products from DB
-        # Payuee products are fetched separately in list()
-        queryset = Product.objects.filter(status='active', source='local')
+        # Fetch and sync from Payuee (with caching to avoid rate limits)
+        try:
+            client = get_payuee_client()
+            result = client.get_store_products()
+            # DEBUG LOGGING
+            logger.info(f"=== PAYUEE DEBUG ===")
+            logger.info(f"Result success: {result.get('success')}")
+            logger.info(f"Result error: {result.get('error')}")  # ADD THIS
+            logger.info(f"Result status_code: {result.get('status_code')}") 
+            logger.info(f"Result keys: {result.keys() if isinstance(result, dict) else 'N/A'}")
+            
+            if result['success']:
+                logger.info(f"Payuee data keys: {result['data'].keys()}") # DEBUG
+                self._sync_payuee_products(result['data'])
+        except Exception as e:
+            logger.error(f"Failed to sync Payuee products: {e}")
+            # Fail silently, serve cached/local products
         
+        # Return local products (including synced ones)
+        queryset = Product.objects.filter(status='active')
+        logger.info(f"Local products count: {queryset.count()}")  # DEBUG
+        
+        # Apply filters from query params
         category_slug = self.request.query_params.get('category')
         if category_slug:
             queryset = queryset.filter(category__slug=category_slug)
@@ -146,71 +95,69 @@ class ProductListView(generics.ListAPIView):
         if in_stock == 'true':
             queryset = queryset.filter(quantity__gt=0)
         
+        # Apply sorting
         ordering = self.request.query_params.get('ordering', '-created_at')
         queryset = queryset.order_by(ordering)
         
         return queryset.select_related('category')
     
-    def list(self, request, *args, **kwargs):
-        # Get local products from DB
-        local_queryset = self.get_queryset()
-        local_page = self.paginate_queryset(local_queryset)
+    def _sync_payuee_products(self, data):
+        """Sync Payuee products to local database."""
+        # FIXED: "success" is directly the array of products
+        products = data.get('success', [])
+        logger.info(f"Payuee returned {len(products)} products")  # DEBUG
         
-        local_serializer = self.get_serializer(
-            local_page if local_page is not None else local_queryset,
-            many=True,
-            context={'request': request}
+        for p in products[:5]:
+            try:
+                # Get first image URL if available
+                logger.info(f"Syncing product: {p.get('ID')} - {p.get('title')}")  # DEBUG
+                featured_image = None
+                if p.get('product_image') and len(p['product_image']) > 0:
+                    image_path = p['product_image'][0]['url']
+                    featured_image = f"https://payuee.com/image/{image_path}"
+                
+                # Create slug from product_url_id or title
+                slug = p.get('product_url_id', '')
+                if not slug:
+                    slug = p['title'].lower().replace(' ', '-')[:50]
+                
+                Product.objects.update_or_create(
+                    payuee_product_id=str(p['ID']),
+                    defaults={
+                        'name': p['title'],
+                        'slug': slug,
+                        'description': p.get('description', ''),
+                        'short_description': p.get('description', '')[:200] if p.get('description') else '',
+                        'price': p['selling_price'],
+                        'compare_at_price': p.get('initial_cost', p['selling_price']),
+                        'quantity': p.get('stock_remaining', 0),
+                        'category_id': self._get_or_create_category(p.get('category', 'others')),
+                        'featured_image': f"https://payuee.com/image/{p['product_image'][0]['url']}" if p.get('product_image') else None,
+                        'source': 'payuee',
+                        'status': 'active' if p.get('stock_remaining', 0) > 0 else 'out_of_stock',
+                        'is_featured': p.get('featured', False),
+                        'average_rating': 0,  # Payuee doesn't provide this
+                        'review_count': p.get('product_review_count', 0),
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to sync product {p.get('ID')}: {e}")
+                continue
+    
+    def _get_or_create_category(self, category_name):
+        """Get or create category by name."""
+        from django.utils.text import slugify
+        slug = slugify(category_name)
+        category, _ = Category.objects.get_or_create(
+            slug=slug,
+            defaults={'name': category_name, 'is_active': True}
         )
-        local_data = local_serializer.data
-        
-        # Fetch Payuee products LIVE (not saved to DB)
-        payuee_data = []
-        try:
-            client = get_payuee_client()
-            category = request.query_params.get('category', 'all')
-            result = client.get_all_store_products(
-                max_pages=2,  # Limit pages to avoid slow response
-                category=category if category != 'all' else 'all'
-            )
-            
-            if result.get('success'):
-                products = result.get('data', {}).get('success', [])
-                for p in products:
-                    payuee_data.append(payuee_product_to_dict(p))
-                    
-        except Exception as e:
-            logger.error(f"Error fetching live Payuee products: {e}")
-            # Continue with just local products if Payuee fails
-        
-        # Combine: local products first, then Payuee products
-        combined_data = local_data + payuee_data
-        
-        # Apply pagination to combined results
-        page_size = self.paginator.page_size
-        page_number = int(request.query_params.get('page', 1))
-        start = (page_number - 1) * page_size
-        end = start + page_size
-        paginated_data = combined_data[start:end]
-        
-        return Response({
-            'count': len(combined_data),
-            'next': f"?page={page_number + 1}" if end < len(combined_data) else None,
-            'previous': f"?page={page_number - 1}" if page_number > 1 else None,
-            'results': paginated_data
-        })
+        return category.id
 
-
-# ─────────────────────────────────────────────────────────────
-# PRODUCT DETAIL — LIVE FETCH FROM PAYUEE + LOCAL DB
-# ─────────────────────────────────────────────────────────────
 
 class ProductDetailView(generics.RetrieveAPIView):
-    """
-    Get product details: checks local DB first,
-    if not found, fetches LIVE from Payuee API.
-    Nothing is saved to DB.
-    """
-    queryset = Product.objects.filter(status='active', source='local')
+    """Get product details."""
+    queryset = Product.objects.filter(status='active')
     serializer_class = ProductDetailSerializer
     permission_classes = [permissions.AllowAny]
     lookup_field = 'slug'
@@ -221,64 +168,22 @@ class ProductDetailView(generics.RetrieveAPIView):
         return context
     
     def retrieve(self, request, *args, **kwargs):
-        slug = kwargs.get('slug')
+        instance = self.get_object()
         
-        # Try to find in local DB first
-        try:
-            instance = Product.objects.get(slug=slug, source='local')
-            
-            # Track product view for local products
-            ProductView.objects.create(
-                product=instance,
-                user=request.user if request.user.is_authenticated else None,
-                session_id=request.session.session_key if hasattr(request, 'session') else None,
-                ip_address=self.get_client_ip(request),
-                user_agent=request.META.get('HTTP_USER_AGENT', '')
-            )
-            
-            serializer = self.get_serializer(instance)
-            return Response(serializer.data)
-            
-        except Product.DoesNotExist:
-            # Not in local DB — try Payuee LIVE
-            pass
-        
-        # Check if it's a Payuee product (slug might contain payuee ID)
-        # Try to fetch from Payuee by treating slug as product_url_id
-        try:
-            client = get_payuee_client()
-            
-            # Search for product by URL ID in Payuee
-            result = client.search_products(
-                search_term=slug,
-                limit=10
-            )
-            
-            if result.get('success'):
-                products = result.get('data', {}).get('success', [])
-                for p in products:
-                    if p.get('product_url_id') == slug or str(p.get('ID')) in slug:
-                        product_dict = payuee_product_to_dict(p)
-                        # Convert to Product-like object for serializer
-                        return Response(product_dict)
-            
-            # If not found by search, try direct ID if slug is numeric
-            if slug.isdigit():
-                result = client.get_product(int(slug))
-                if result.get('success'):
-                    p = result.get('data', {})
-                    product_dict = payuee_product_to_dict(p)
-                    return Response(product_dict)
-                    
-        except Exception as e:
-            logger.error(f"Error fetching live Payuee product detail: {e}")
-        
-        return Response(
-            {'detail': 'Product not found.'},
-            status=status.HTTP_404_NOT_FOUND
+        # Track product view
+        ProductView.objects.create(
+            product=instance,
+            user=request.user if request.user.is_authenticated else None,
+            session_id=request.session.session_key if hasattr(request, 'session') else None,
+            ip_address=self.get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')
         )
+        
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
     
     def get_client_ip(self, request):
+        """Get client IP address."""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
         if x_forwarded_for:
             ip = x_forwarded_for.split(',')[0]
@@ -288,7 +193,7 @@ class ProductDetailView(generics.RetrieveAPIView):
 
 
 class FeaturedProductsView(generics.ListAPIView):
-    """Get featured products — local only."""
+    """Get featured products."""
     serializer_class = ProductListSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
@@ -296,8 +201,7 @@ class FeaturedProductsView(generics.ListAPIView):
     def get_queryset(self):
         return Product.objects.filter(
             status='active',
-            is_featured=True,
-            source='local'
+            is_featured=True
         ).select_related('category')[:20]
 
 
@@ -308,28 +212,21 @@ class RelatedProductsView(generics.ListAPIView):
     
     def get_queryset(self):
         product_slug = self.kwargs.get('slug')
-        product = get_object_or_404(Product, slug=product_slug, source='local')
+        product = get_object_or_404(Product, slug=product_slug)
         
         if product.category:
             return Product.objects.filter(
                 category=product.category,
-                status='active',
-                source='local'
+                status='active'
             ).exclude(id=product.id)[:8]
         return Product.objects.none()
 
 
-# ─────────────────────────────────────────────────────────────
-# PRODUCT SEARCH — LIVE FETCH FROM PAYUEE + LOCAL DB
-# ─────────────────────────────────────────────────────────────
-
+# Product Search
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def search_products(request):
-    """
-    Search products: searches local DB + fetches LIVE from Payuee.
-    Nothing is saved to DB.
-    """
+    """Search products with advanced filters."""
     serializer = ProductSearchSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     
@@ -340,104 +237,73 @@ def search_products(request):
     max_price = data.get('max_price')
     sort_by = data.get('sort_by', 'relevance')
     
-    # Search local products
-    local_queryset = Product.objects.filter(status='active', source='local')
+    # Base queryset
+    queryset = Product.objects.filter(status='active')
     
+    # Apply search query
     if query:
-        local_queryset = local_queryset.filter(
+        queryset = queryset.filter(
             Q(name__icontains=query) |
             Q(description__icontains=query) |
             Q(short_description__icontains=query) |
             Q(sku__icontains=query)
         )
     
+    # Apply category filter
     if category_id:
-        local_queryset = local_queryset.filter(category_id=category_id)
+        queryset = queryset.filter(category_id=category_id)
     
+    # Apply price filters
     if min_price:
-        local_queryset = local_queryset.filter(price__gte=min_price)
+        queryset = queryset.filter(price__gte=min_price)
     if max_price:
-        local_queryset = local_queryset.filter(price__lte=max_price)
+        queryset = queryset.filter(price__lte=max_price)
     
+    # Apply sorting
     if sort_by == 'price_low':
-        local_queryset = local_queryset.order_by('price')
+        queryset = queryset.order_by('price')
     elif sort_by == 'price_high':
-        local_queryset = local_queryset.order_by('-price')
+        queryset = queryset.order_by('-price')
     elif sort_by == 'newest':
-        local_queryset = local_queryset.order_by('-created_at')
+        queryset = queryset.order_by('-created_at')
     elif sort_by == 'rating':
-        local_queryset = local_queryset.order_by('-average_rating')
+        queryset = queryset.order_by('-average_rating')
     
-    local_serializer = ProductListSerializer(
-        local_queryset,
-        many=True,
-        context={'request': request}
-    )
-    local_results = local_serializer.data
-    
-    # Search Payuee LIVE
-    payuee_results = []
-    try:
-        client = get_payuee_client()
-        result = client.search_products(
-            search_term=query,
-            limit=50,
-            category='all'
-        )
-        
-        if result.get('success'):
-            products = result.get('data', {}).get('success', [])
-            for p in products:
-                payuee_dict = payuee_product_to_dict(p)
-                # Apply price filters to Payuee results too
-                price = payuee_dict.get('price', 0)
-                if min_price and price < float(min_price):
-                    continue
-                if max_price and price > float(max_price):
-                    continue
-                payuee_results.append(payuee_dict)
-                
-    except Exception as e:
-        logger.error(f"Error searching live Payuee products: {e}")
-    
-    # Combine results
-    combined = local_results + payuee_results
-    
-    # Apply sorting to combined
-    if sort_by == 'price_low':
-        combined.sort(key=lambda x: float(x.get('price', 0)))
-    elif sort_by == 'price_high':
-        combined.sort(key=lambda x: float(x.get('price', 0)), reverse=True)
-    
-    # Paginate
+    # Paginate results
     paginator = StandardResultsSetPagination()
-    page = paginator.paginate_queryset(combined, request)
+    page = paginator.paginate_queryset(queryset, request)
     
     if page is not None:
-        return paginator.get_paginated_response(page)
+        serializer = ProductListSerializer(
+            page, 
+            many=True, 
+            context={'request': request}
+        )
+        return paginator.get_paginated_response(serializer.data)
     
-    return Response(combined)
+    serializer = ProductListSerializer(
+        queryset, 
+        many=True, 
+        context={'request': request}
+    )
+    return Response(serializer.data)
 
 
-# ─────────────────────────────────────────────────────────────
-# WISHLIST VIEWS — LOCAL ONLY
-# ─────────────────────────────────────────────────────────────
-
+# Wishlist Views
 class WishlistListView(generics.ListAPIView):
-    """List user's wishlist items — local products only."""
+    """List user's wishlist items."""
     serializer_class = WishlistSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
         return Wishlist.objects.filter(
-            user=self.request.user,
-            product__source='local'
+            user=self.request.user
         ).select_related('product', 'product__category')
 
 
 class WishlistAddView(generics.CreateAPIView):
-    """Add product to wishlist — local products only."""
+    """Add product to wishlist."""
     serializer_class = WishlistCreateSerializer
     permission_classes = [permissions.IsAuthenticated]
     
@@ -447,13 +313,7 @@ class WishlistAddView(generics.CreateAPIView):
         
         product = serializer.validated_data['product']
         
-        # Only local products can be wishlisted
-        if product.source != 'local':
-            return Response(
-                {'message': 'Only local products can be added to wishlist.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+        # Check if already in wishlist
         wishlist_item, created = Wishlist.objects.get_or_create(
             user=request.user,
             product=product
@@ -498,14 +358,8 @@ class WishlistRemoveView(generics.DestroyAPIView):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def toggle_wishlist(request, product_id):
-    """Toggle product in wishlist — local products only."""
+    """Toggle product in wishlist."""
     product = get_object_or_404(Product, id=product_id)
-    
-    if product.source != 'local':
-        return Response(
-            {'message': 'Only local products can be added to wishlist.'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
     
     wishlist_item = Wishlist.objects.filter(
         user=request.user,
@@ -526,19 +380,16 @@ def toggle_wishlist(request, product_id):
         })
 
 
-# ─────────────────────────────────────────────────────────────
-# PRODUCT REVIEW VIEWS — LOCAL ONLY
-# ─────────────────────────────────────────────────────────────
-
+# Product Review Views
 class ProductReviewListView(generics.ListAPIView):
-    """List reviews for a product — local products only."""
+    """List reviews for a product."""
     serializer_class = ProductReviewSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
         product_slug = self.kwargs.get('slug')
-        product = get_object_or_404(Product, slug=product_slug, source='local')
+        product = get_object_or_404(Product, slug=product_slug)
         return ProductReview.objects.filter(
             product=product,
             is_approved=True
@@ -546,25 +397,26 @@ class ProductReviewListView(generics.ListAPIView):
 
 
 class ProductReviewCreateView(generics.CreateAPIView):
-    """Create a product review — local products only."""
+    """Create a product review."""
     serializer_class = ProductReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
     
     def perform_create(self, serializer):
-        from rest_framework import serializers as drf_serializers
         product_slug = self.kwargs.get('slug')
-        product = get_object_or_404(Product, slug=product_slug, source='local')
+        product = get_object_or_404(Product, slug=product_slug)
         
+        # Check if user has already reviewed this product
         existing_review = ProductReview.objects.filter(
             product=product,
             user=self.request.user
         ).first()
         
         if existing_review:
-            raise drf_serializers.ValidationError(
+            raise serializers.ValidationError(
                 'You have already reviewed this product.'
             )
         
+        # Check if user has purchased this product
         from orders.models import OrderItem
         is_verified = OrderItem.objects.filter(
             order__user=self.request.user,
@@ -578,11 +430,13 @@ class ProductReviewCreateView(generics.CreateAPIView):
             is_verified_purchase=is_verified
         )
         
+        # Update product rating
         self.update_product_rating(product)
         
         return review
     
     def update_product_rating(self, product):
+        """Update product average rating."""
         ratings = ProductReview.objects.filter(
             product=product,
             is_approved=True
@@ -596,13 +450,10 @@ class ProductReviewCreateView(generics.CreateAPIView):
         product.save()
 
 
-# ─────────────────────────────────────────────────────────────
-# ADMIN VIEWS — LOCAL ONLY
-# ─────────────────────────────────────────────────────────────
-
+# Admin Product Management
 class AdminProductListCreateView(generics.ListCreateAPIView):
-    """Admin: List and create local products only."""
-    queryset = Product.objects.filter(source='local')
+    """Admin: List and create products."""
+    queryset = Product.objects.all()
     serializer_class = ProductCreateUpdateSerializer
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = StandardResultsSetPagination
@@ -613,12 +464,12 @@ class AdminProductListCreateView(generics.ListCreateAPIView):
         return [permissions.IsAuthenticated()]
     
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, source='local')
+        serializer.save(created_by=self.request.user)
 
 
 class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """Admin: Manage local products only."""
-    queryset = Product.objects.filter(source='local')
+    """Admin: Retrieve, update, delete product."""
+    queryset = Product.objects.all()
     serializer_class = ProductCreateUpdateSerializer
     permission_classes = [permissions.IsAdminUser]
     lookup_field = 'id'
@@ -627,7 +478,7 @@ class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def get_categories_with_products(request):
-    """Get categories with their LOCAL products for homepage."""
+    """Get categories with their products for homepage."""
     categories = Category.objects.filter(
         is_active=True,
         parent=None
@@ -637,8 +488,7 @@ def get_categories_with_products(request):
     for category in categories:
         products = Product.objects.filter(
             category=category,
-            status='active',
-            source='local'
+            status='active'
         ).select_related('category')[:4]
         
         result.append({

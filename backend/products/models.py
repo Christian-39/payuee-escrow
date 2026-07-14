@@ -72,86 +72,11 @@ class Product(models.Model):
         choices=PRODUCT_SOURCE_CHOICES, 
         default='local'
     )
-    
-    # ── Payuee Integration Fields ──
-    # Payuee uses INTEGER IDs, not strings. Changed from CharField to IntegerField.
-    payuee_product_id = models.PositiveIntegerField(
-        blank=True, 
-        null=True, 
-        unique=True,
-        db_index=True,
-        help_text='Payuee product ID (integer, e.g., 92, 255)'
-    )
-    payuee_vendor_id = models.PositiveIntegerField(
-        blank=True, 
-        null=True,
-        db_index=True,
-        help_text='Payuee vendor ID (eshop_user_id, e.g., 19, 51)'
-    )
-    payuee_product_url_id = models.CharField(
-        max_length=255, 
-        blank=True, 
-        null=True,
-        help_text='Payuee product URL slug (e.g., "italian-shoe-90")'
-    )
-    payuee_stock_remaining = models.PositiveIntegerField(
-        blank=True, 
-        null=True,
-        help_text='Stock count from Payuee API (stock_remaining field)'
-    )
-    payuee_estimated_delivery = models.PositiveIntegerField(
-        blank=True, 
-        null=True,
-        help_text='Estimated delivery days from Payuee'
-    )
-    payuee_net_weight = models.DecimalField(
-        max_digits=8, 
-        decimal_places=2, 
-        blank=True, 
-        null=True,
-        help_text='Product weight in kg from Payuee'
-    )
-    payuee_category = models.CharField(
-        max_length=50, 
-        blank=True, 
-        null=True,
-        help_text='Payuee category (e.g., outfits, jewelry, gadgets)'
-    )
-    payuee_vendor_type = models.CharField(
-        max_length=20, 
-        blank=True, 
-        null=True,
-        help_text='Vendor subscription type (basic, premium, etc.)'
-    )
-    payuee_clothing_sizes = models.CharField(
+    payuee_product_id = models.CharField(
         max_length=100, 
         blank=True, 
         null=True,
-        help_text='Available clothing sizes from Payuee (e.g., "S,M,L,XL")'
-    )
-    payuee_shoe_sizes = models.CharField(
-        max_length=100, 
-        blank=True, 
-        null=True,
-        help_text='Available shoe sizes from Payuee (e.g., "30-40")'
-    )
-    payuee_tags = models.JSONField(
-        default=list, 
-        blank=True,
-        help_text='Product tags from Payuee API'
-    )
-    payuee_last_synced = models.DateTimeField(
-        blank=True, 
-        null=True,
-        help_text='Last time product data was synced from Payuee'
-    )
-    payuee_featured = models.BooleanField(
-        default=False,
-        help_text='Featured flag from Payuee'
-    )
-    payuee_on_sale = models.BooleanField(
-        default=False,
-        help_text='On sale flag from Payuee'
+        help_text='Payuee product ID if sourced from Payuee'
     )
     
     # Categorization
@@ -181,7 +106,7 @@ class Product(models.Model):
         blank=True, 
         null=True
     )
-    currency = models.CharField(max_length=3, default='NGN')
+    currency = models.CharField(max_length=3, default='USD')
     
     # Inventory
     quantity = models.PositiveIntegerField(default=0)
@@ -189,12 +114,8 @@ class Product(models.Model):
     track_inventory = models.BooleanField(default=True)
     
     # Images
-    featured_image = models.URLField(blank=True, null=True)
-    images = models.JSONField(
-        default=list, 
-        blank=True,
-        help_text='List of image URLs. For Payuee products, prepend https://payuee.com/image/'
-    )
+    featured_image = models.URLField()
+    images = models.ImageField(upload_to='products/',blank=True, null=True)
     
     # Status
     status = models.CharField(
@@ -236,10 +157,8 @@ class Product(models.Model):
             models.Index(fields=['slug']),
             models.Index(fields=['category']),
             models.Index(fields=['status']),
+            models.Index(fields=['is_featured']),
             models.Index(fields=['source']),
-            models.Index(fields=['payuee_product_id']),
-            models.Index(fields=['payuee_vendor_id']),
-            models.Index(fields=['payuee_category']),
         ]
     
     def save(self, *args, **kwargs):
@@ -253,8 +172,6 @@ class Product(models.Model):
     @property
     def is_in_stock(self):
         """Check if product is in stock."""
-        if self.source == 'payuee' and self.payuee_stock_remaining is not None:
-            return self.payuee_stock_remaining > 0
         if not self.track_inventory:
             return True
         return self.quantity > 0
@@ -262,18 +179,9 @@ class Product(models.Model):
     @property
     def is_low_stock(self):
         """Check if product is low in stock."""
-        if self.source == 'payuee' and self.payuee_stock_remaining is not None:
-            return self.payuee_stock_remaining <= self.low_stock_threshold
         if not self.track_inventory:
             return False
         return self.quantity <= self.low_stock_threshold
-    
-    @property
-    def stock_quantity(self):
-        """Unified stock accessor for serializer validation."""
-        if self.source == 'payuee' and self.payuee_stock_remaining is not None:
-            return self.payuee_stock_remaining
-        return self.quantity
     
     @property
     def discount_percentage(self):
@@ -282,40 +190,6 @@ class Product(models.Model):
             discount = ((self.compare_at_price - self.price) / self.compare_at_price) * 100
             return round(discount, 2)
         return 0
-    
-    @property
-    def effective_price(self):
-        """Get the effective selling price."""
-        return self.price
-    
-    @property
-    def first_image_url(self):
-        """Get first image URL (compatible with Payuee API response)."""
-        if self.images and isinstance(self.images, list) and len(self.images) > 0:
-            first = self.images[0]
-            if isinstance(first, dict):
-                url = first.get('url', '')
-                if url and not url.startswith('http'):
-                    return f'https://payuee.com/image/{url}'
-                return url
-            return first
-        return self.featured_image
-    
-    def get_image_urls(self):
-        """Return list of full image URLs."""
-        urls = []
-        if self.images and isinstance(self.images, list):
-            for img in self.images:
-                if isinstance(img, dict):
-                    url = img.get('url', '')
-                    if url and not url.startswith('http'):
-                        url = f'https://payuee.com/image/{url}'
-                    urls.append(url)
-                elif isinstance(img, str):
-                    if not img.startswith('http'):
-                        img = f'https://payuee.com/image/{img}'
-                    urls.append(img)
-        return urls or ([self.featured_image] if self.featured_image else [])
 
 
 class ProductReview(models.Model):

@@ -21,7 +21,7 @@ SECRET_KEY = config('SECRET_KEY', default='your-secret-key-here-change-in-produc
 DEBUG = True
 # DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,gadgethub-api-vdcs.onrender.com').split(',')
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
 
 # Application definition
 INSTALLED_APPS = [
@@ -153,7 +153,7 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
-    'UPDATE_LAST_LOGIN': False,
+    'UPDATE_LAST_LOGIN': True,
 }
 
 # CORS Configuration
@@ -168,8 +168,6 @@ CORS_ALLOW_CREDENTIALS = True
 PAYUEE_API_KEY = config('PAYUEE_API_KEY')
 PAYUEE_API_SECRET = config('PAYUEE_API_SECRET')
 PAYUEE_BASE_URL = config('PAYUEE_BASE_URL')
-WEBHOOK_SECRET = config('WEBHOOK_SECRET')
-PAYUEE_WEBHOOK_URL = config('PAYUEE_WEBHOOK_URL')
 
 # Backblaze B2 Configuration
 AWS_ACCESS_KEY_ID = config('B2_KEY_ID', default='')
@@ -187,16 +185,8 @@ AWS_S3_SIGNATURE_VERSION = "s3v4"
 USE_S3 = config('USE_S3', default=False, cast=bool)
 
 if USE_S3:
-    STORAGES = {
-        "default": {
-            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
-        },
-        "staticfiles": {
-            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
-        },
-    }
-    # Backblaze URL format usually requires the bucket name in the domain
-    MEDIA_URL = f'https://{AWS_STORAGE_BUCKET_NAME}.{AWS_S3_ENDPOINT_URL.replace("https://", "")}/'
+    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+    MEDIA_URL = f'{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/'
 else:
     MEDIA_URL = '/media/'
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
@@ -223,13 +213,6 @@ LOGGING = {
             'level': 'INFO',
         },
     },
-}
-
-CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'unique-snowflake',
-    }
 }
 
 # Security Settings

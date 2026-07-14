@@ -16,12 +16,6 @@ class User(AbstractUser):
     email = models.EmailField(_('email address'), unique=True)
     phone_number = models.CharField(max_length=20, blank=True, null=True)
     profile_image = models.ImageField(upload_to='profiles/',blank=True, null=True)
-    payuee_transaction_pin = models.CharField(
-        max_length=6,
-        blank=True,
-        null=True,
-        help_text='6-digit PIN for Payuee escrow order authorization'
-    )
     
     # Address fields
     address = models.TextField(blank=True, null=True)

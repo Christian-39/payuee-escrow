@@ -3,14 +3,10 @@ Serializers for the accounts app.
 Handles user registration, login, and profile management.
 """
 
-import re
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-
-from rest_framework_simplejwt.serializers import TokenRefreshSerializer
-import uuid
 
 User = get_user_model()
 
@@ -26,14 +22,6 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         
         return data
 
-class CustomTokenRefreshSerializer(TokenRefreshSerializer):
-    """
-    Override to handle UUID primary keys properly.
-    """
-    def validate(self, attrs):
-        # Trigger default token decoding behavior
-        data = super().validate(attrs)
-        return data
 
 class UserSerializer(serializers.ModelSerializer):
     """Serializer for user data."""
@@ -48,8 +36,7 @@ class UserSerializer(serializers.ModelSerializer):
             'phone_number', 'profile_image', 'address', 'city', 'state',
             'country', 'postal_code', 'dark_mode', 'email_notifications',
             'push_notifications', 'marketing_emails', 'is_admin', 'is_vendor',
-            'email_verified', 'has_complete_profile', 'payuee_transaction_pin',
-            'created_at', 'updated_at'
+            'email_verified', 'has_complete_profile', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'email_verified', 'created_at', 'updated_at']
 
@@ -93,31 +80,8 @@ class UserProfileUpdateSerializer(serializers.ModelSerializer):
             'first_name', 'last_name', 'phone_number', 'profile_image',
             'address', 'city', 'state', 'country', 'postal_code',
             'dark_mode', 'email_notifications', 'push_notifications',
-            'marketing_emails', 'payuee_transaction_pin'
+            'marketing_emails'
         ]
-    
-    def validate_payuee_transaction_pin(self, value):
-        """Validate Payuee transaction PIN format."""
-        if value is None or value == '':
-            return value
-        
-        pin_str = str(value).strip()
-        
-        # Must be exactly 6 digits
-        if not re.match(r'^\d{6}$', pin_str):
-            raise serializers.ValidationError(
-                'Payuee transaction PIN must be exactly 6 digits.'
-            )
-        
-        # Block weak/common PINs
-        weak_pins = {'000000', '111111', '222222', '333333', '444444',
-                     '555555', '666666', '777777', '888888', '999999', '123456'}
-        if pin_str in weak_pins:
-            raise serializers.ValidationError(
-                'Please choose a more secure PIN (avoid sequential or repeated digits).'
-            )
-        
-        return pin_str
 
 
 class ChangePasswordSerializer(serializers.Serializer):
@@ -144,33 +108,3 @@ class UserPreferencesSerializer(serializers.ModelSerializer):
             'dark_mode', 'email_notifications', 
             'push_notifications', 'marketing_emails'
         ]
-
-
-class PayueePinSerializer(serializers.Serializer):
-    """Standalone serializer for setting/updating Payuee transaction PIN."""
-    
-    payuee_transaction_pin = serializers.CharField(
-        required=True,
-        min_length=6,
-        max_length=6,
-        help_text='6-digit Payuee transaction PIN for escrow order authorization'
-    )
-    
-    def validate_payuee_transaction_pin(self, value):
-        pin_str = str(value).strip()
-        
-        # Must be exactly 6 digits
-        if not re.match(r'^\d{6}$', pin_str):
-            raise serializers.ValidationError(
-                'PIN must be exactly 6 digits (numbers only).'
-            )
-        
-        # Block weak/common PINs
-        weak_pins = {'000000', '111111', '222222', '333333', '444444',
-                     '555555', '666666', '777777', '888888', '999999', '123456'}
-        if pin_str in weak_pins:
-            raise serializers.ValidationError(
-                'Please choose a more secure PIN (avoid sequential or repeated digits).'
-            )
-        
-        return pin_str
