@@ -168,6 +168,9 @@ CORS_ALLOW_CREDENTIALS = True
 PAYUEE_API_KEY = config('PAYUEE_API_KEY')
 PAYUEE_API_SECRET = config('PAYUEE_API_SECRET')
 PAYUEE_BASE_URL = config('PAYUEE_BASE_URL')
+# Used to verify inbound Payuee webhook signatures (separate from the API secret above).
+WEBHOOK_SECRET = config('WEBHOOK_SECRET', default='')
+PAYUEE_WEBHOOK_URL = config('PAYUEE_WEBHOOK_URL', default='')
 
 # Backblaze B2 Configuration
 AWS_ACCESS_KEY_ID = config('B2_KEY_ID', default='')

@@ -293,27 +293,81 @@ def checkout(request):
                     item.product.quantity -= item.quantity
                     item.product.save()
 
-            # 🔥 PAYUEE CALL WITH FULL DEBUGGING
+            # === PAYUEE ESCROW CALL ===
             logger.info("=== PAYUEE CALL START ===")
             payuee_result = None
-            
+
             try:
                 from payments.payuee_client import PayueeClient
                 payuee_client = PayueeClient()
-                logger.info(f"PayueeClient created")
-                logger.info(f"Base URL: {payuee_client.base_url}")
-                
-                payuee_result = payuee_client.create_order(order, cart_items)
+
+                payuee_items = [i for i in cart_items if i.product.payuee_vendor_id]
+
+                if not payuee_items:
+                    # Cart has no Payuee-sourced products (e.g. local-only
+                    # catalog items) - nothing to place in escrow.
+                    logger.info("No Payuee-sourced items in cart - skipping escrow order creation.")
+                    payuee_result = {'success': False, 'error': 'no_payuee_items'}
+                else:
+                    vendor_ids = sorted({i.product.payuee_vendor_id for i in payuee_items})
+
+                    # NOTE: customer_latitude/longitude are not currently
+                    # collected by CheckoutSerializer. Defaulting to 0.0 here
+                    # is a stopgap - add lat/lon fields to the checkout form
+                    # and pass real values through for accurate shipping.
+                    customer_lat = getattr(order, 'shipping_latitude', 0.0) or 0.0
+                    customer_lon = getattr(order, 'shipping_longitude', 0.0) or 0.0
+
+                    shipping_result = payuee_client.calculate_shipping_fees(
+                        vendors=vendor_ids,
+                        state=order.shipping_state,
+                        city=order.shipping_city,
+                        latitude=customer_lat,
+                        longitude=customer_lon,
+                        cart_items=[
+                            {
+                                'product_id': i.product.payuee_product_id,
+                                'eshop_user_id': i.product.payuee_vendor_id,
+                                'quantity': i.quantity,
+                            }
+                            for i in payuee_items
+                        ],
+                    )
+
+                    if not shipping_result.get('success'):
+                        logger.warning(f"Payuee shipping-fees call failed: {shipping_result.get('error')}")
+                        payuee_result = {'success': False, 'error': shipping_result.get('error', 'shipping_unavailable')}
+                    else:
+                        shipping_array = shipping_result['data'].get('shipping', [])
+
+                        # NOTE: trans_code must be a code the customer knows
+                        # (per Payuee docs, never silently auto-generate
+                        # without the customer's awareness). CheckoutSerializer
+                        # doesn't currently collect one - using the order's
+                        # idempotency_key as a stopgap so the call is well-formed;
+                        # replace with a real customer-entered PIN once the
+                        # checkout form collects it.
+                        trans_code = getattr(order, 'trans_code', None) or order.idempotency_key[:6]
+
+                        payuee_result = payuee_client.create_order(
+                            order,
+                            payuee_items,
+                            trans_code=trans_code,
+                            shipping=shipping_array,
+                            customer_latitude=customer_lat,
+                            customer_longitude=customer_lon,
+                        )
+
                 logger.info(f"Payuee result: {payuee_result}")
 
             except Timeout as e:
                 logger.error(f"Payuee Timeout: {e}")
                 payuee_result = {'success': False, 'error': 'timeout'}
-                
+
             except RequestException as e:
                 logger.error(f"Payuee RequestException: {e}")
                 payuee_result = {'success': False, 'error': 'request_failed'}
-                
+
             except Exception as e:
                 logger.error(f"Payuee unexpected error: {e}", exc_info=True)
                 payuee_result = {'success': False, 'error': str(e)}
@@ -327,22 +381,28 @@ def checkout(request):
             # Handle result
             if payuee_result and payuee_result.get('success'):
                 logger.info("Payuee SUCCESS")
-                order.payuee_order_id = payuee_result.get('order_id')
-                order.payuee_escrow_status = payuee_result.get('status')
-                order.status = 'pending'
+                # POST /v1/order/create returns "order_ids": [...] (one per
+                # vendor) rather than a single order_id - store the first as
+                # our primary reference and keep the rest in escrow_status
+                # notes for now (a proper multi-vendor order model is a
+                # bigger change than this fix covers).
+                order_ids = payuee_result.get('order_ids') or []
+                order.payuee_order_id = str(order_ids[0]) if order_ids else None
+                order.payuee_escrow_status = payuee_result.get('status', 'created')
+                order.status = 'pending' if payuee_result.get('status') != 'ON_HOLD' else 'pending'
                 order.payment_status = 'pending'
                 order.save()
 
                 OrderStatusHistory.objects.create(
                     order=order,
                     status='pending',
-                    notes='Payuee escrow initiated.'
+                    notes=f"Payuee escrow initiated. order_ids={order_ids}. {payuee_result.get('message', '')}".strip()
                 )
 
                 return Response({
                     'message': 'Order created successfully.',
                     'order': OrderDetailSerializer(order).data,
-                    'payment_url': payuee_result.get('payment_url'),
+                    'payuee_order_ids': order_ids,
                 }, status=status.HTTP_201_CREATED)
 
             else:
@@ -506,17 +566,35 @@ class AdminShippingUpdateView(generics.UpdateAPIView):
 @api_view(['POST'])
 @permission_classes([permissions.IsAdminUser])
 def verify_order_delivery(request, order_number):
-    """Verify order delivery via Payuee."""
+    """
+    Verify order delivery via Payuee (POST /v1/order/verify).
+
+    Per Payuee's docs, this requires the encrypted payload from scanning the
+    customer's delivery QR code (POST /v1/order/scan-qr) plus the customer's
+    id and the transaction code they provide at the door - these must be
+    supplied by the caller (e.g. a delivery-agent mobile view), not
+    fabricated here.
+    """
     order = get_object_or_404(Order, order_number=order_number)
-    
+
     if not order.payuee_order_id:
         return Response(
             {'error': 'This order is not associated with Payuee.'},
             status=status.HTTP_400_BAD_REQUEST
         )
-    
+
+    encrypted = request.data.get('encrypted')
+    customer_id = request.data.get('customer_id')
+    trans_code = request.data.get('trans_code')
+
+    if not all([encrypted, customer_id, trans_code]):
+        return Response(
+            {'error': 'encrypted, customer_id, and trans_code are all required (scan the delivery QR code first via /v1/order/scan-qr).'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
     payuee_client = PayueeClient()
-    result = payuee_client.verify_delivery(order.payuee_order_id)
+    result = payuee_client.verify_delivery(encrypted, customer_id, trans_code)
     
     if result['success']:
         order.status = 'delivered'

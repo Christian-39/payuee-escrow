@@ -1,14 +1,19 @@
-"""
-GadgetHub URL Configuration
-Main URL router for the entire project.
-"""
-
+# gadgethub/urls.py
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+def api_root(request):
+    return JsonResponse({
+        "status": "ok",
+        "message": "GadgetHub API is running",
+        "version": "1.0.0"
+    })
+
 urlpatterns = [
+    path("", api_root, name="api-root"),  # Add this line
     path('admin/', admin.site.urls),
     path('api/auth/', include('accounts.urls')),
     path('api/products/', include('products.urls')),
@@ -17,10 +22,3 @@ urlpatterns = [
     path('api/admin/', include('admin_dashboard.urls')),
     path('api/webhooks/', include('payments.webhook_urls')),
 ]
-
-if settings.DEBUG:
-    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
-# Serve media files in development
-if settings.DEBUG and not settings.USE_S3:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-    

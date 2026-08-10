@@ -145,19 +145,17 @@ class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
 
     def get_featured_image(self, obj):
         request = self.context.get('request')
-        
-        # If it's a Payuee product with URL
-        if obj.source == 'payuee' and obj.featured_image:
-            return obj.featured_image  # Already a full URL
-        
-        # If it's a local product with ImageField
+
+        # featured_image is a plain URLField for both local and Payuee
+        # products (not a Django ImageField) - it's already a full URL.
+        if obj.featured_image:
+            return obj.featured_image
+
+        # Fall back to the first entry of the `images` JSON list.
         if obj.images:
-            try:
-                url = obj.images.url
-                return request.build_absolute_uri(url) if request else url
-            except:
-                return None
-        
+            url = obj.images[0]
+            return request.build_absolute_uri(url) if request and url.startswith('/') else url
+
         return None
 
     def get_is_wishlisted(self, obj):
@@ -210,19 +208,14 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
 
     def get_featured_image(self, obj):
         request = self.context.get('request')
-        
-        # If Payuee product, return the URL as-is (it's already a full URL)
-        if obj.source == 'payuee' and obj.featured_image:
+
+        if obj.featured_image:
             return obj.featured_image
-        
-        # If local product with ImageField
+
         if obj.images:
-            try:
-                url = obj.images.url
-                return request.build_absolute_uri(url) if request else url
-            except:
-                return None
-        
+            url = obj.images[0]
+            return request.build_absolute_uri(url) if request and url.startswith('/') else url
+
         return None
 
     def get_is_wishlisted(self, obj):

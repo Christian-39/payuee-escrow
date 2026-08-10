@@ -1,10 +1,15 @@
 """
 Webhook handlers for Payuee.
-Processes incoming webhooks from Payuee escrow system.
+Processes incoming webhooks from Payuee's escrow system.
+
+Docs: https://payuee.com/doc/documentation#webhooks-system
+Documented event types: order.created, order.on_hold, order.scanned,
+order.delivered, order.refunded, order.cancelled, order.report.
 """
 
 import json
 import logging
+from django.conf import settings
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -19,199 +24,155 @@ logger = logging.getLogger('payuee')
 @csrf_exempt
 @require_http_methods(["POST"])
 def payuee_webhook(request):
-    """
-    Handle incoming webhooks from Payuee.
-    
-    Expected webhook events:
-    - order.created: Order created in Payuee
-    - order.paid: Payment received
-    - order.verified: Delivery verified, funds released
-    - order.refunded: Order refunded
-    - wallet.funded: Wallet funded
-    """
-    
-    # Get webhook data
+    """Handle incoming webhooks from Payuee."""
+
+    # Signature verification must run against the *raw* body bytes, before
+    # any JSON parsing/re-serialization (parsed-then-reserialized JSON can
+    # differ byte-for-byte from what Payuee signed).
+    raw_body = request.body
+
+    signature = request.headers.get('X-Payuee-Signature', '')
+    timestamp = request.headers.get('X-Payuee-Timestamp', '')
+    webhook_secret = getattr(settings, 'WEBHOOK_SECRET', '') or settings.PAYUEE_API_SECRET
+
+    is_valid = PayueeClient.verify_webhook_signature(
+        payload=raw_body,
+        signature=signature,
+        secret=webhook_secret,
+        timestamp=timestamp,
+    )
+
+    if not is_valid:
+        logger.error("Payuee webhook rejected: invalid or missing signature")
+        return JsonResponse({'error': 'Invalid signature'}, status=401)
+
     try:
-        body = request.body.decode('utf-8')
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        logger.error("Invalid JSON in webhook body")
+        data = json.loads(raw_body.decode('utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        logger.error("Payuee webhook: invalid JSON body")
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
-    
-    # Get headers for signature verification
-    signature = request.headers.get('X-Signature', '')
-    timestamp = request.headers.get('X-Timestamp', '')
-    
-    # Verify signature
-    try:
-        client = PayueeClient()
-        is_valid = client.verify_webhook_signature(
-            signature=signature,
-            timestamp=timestamp,
-            method='POST',
-            path='/api/webhooks/payuee',
-            body=body
-        )
-        
-        if not is_valid:
-            logger.error("Invalid webhook signature")
-            return JsonResponse({'error': 'Invalid signature'}, status=401)
-    
-    except Exception as e:
-        logger.error(f"Signature verification error: {str(e)}")
-        return JsonResponse({'error': 'Signature verification failed'}, status=401)
-    
-    # Process webhook
-    event_type = data.get('event')
-    event_data = data.get('data', {})
-    
-    logger.info(f"Received webhook: {event_type}")
-    
-    # Handle different event types
+
+    event_type = data.get('event_type')
+    order_id = data.get('order_id')
+    order_payload = data.get('order', {})
+
+    logger.info(f"Received Payuee webhook: {event_type} (order_id={order_id})")
+
     handlers = {
         'order.created': handle_order_created,
-        'order.paid': handle_order_paid,
-        'order.verified': handle_order_verified,
+        'order.on_hold': handle_order_on_hold,
+        'order.scanned': handle_order_scanned,
+        'order.delivered': handle_order_delivered,
         'order.refunded': handle_order_refunded,
-        'wallet.funded': handle_wallet_funded,
+        'order.cancelled': handle_order_cancelled,
+        'order.report': handle_order_report,
     }
-    
+
     handler = handlers.get(event_type)
-    if handler:
-        try:
-            handler(event_data)
-            return JsonResponse({'status': 'success'})
-        except Exception as e:
-            logger.error(f"Error processing webhook {event_type}: {str(e)}")
-            return JsonResponse({'error': str(e)}, status=500)
-    else:
-        logger.warning(f"Unknown webhook event type: {event_type}")
-        return JsonResponse({'status': 'ignored', 'reason': 'Unknown event type'})
+    if not handler:
+        logger.warning(f"Unhandled Payuee webhook event type: {event_type}")
+        # Still acknowledge with 200 so Payuee doesn't retry an event we
+        # deliberately don't act on.
+        return JsonResponse({'status': 'success'})
 
-
-def handle_order_created(data):
-    """Handle order.created webhook."""
-    payuee_order_id = data.get('order_id')
-    reference_id = data.get('reference_id')
-    
-    logger.info(f"Order created in Payuee: {payuee_order_id}")
-    
     try:
-        order = Order.objects.get(id=reference_id)
-        order.payuee_order_id = payuee_order_id
-        order.payuee_escrow_status = 'created'
-        order.save()
-        
-        OrderStatusHistory.objects.create(
-            order=order,
-            status='pending',
-            notes=f'Order created in Payuee escrow (ID: {payuee_order_id})'
-        )
-    
+        handler(order_id, order_payload)
     except Order.DoesNotExist:
-        logger.error(f"Order not found: {reference_id}")
-        raise
+        logger.error(f"Payuee webhook {event_type}: no local order for payuee_order_id={order_id}")
+        # Per docs, Payuee retries until it gets a 200. If we don't recognize
+        # the order (e.g. it was never persisted due to an earlier bug), a
+        # 500 here would trigger infinite retries for an order we'll never
+        # match - acknowledge instead and rely on logging/alerting.
+        return JsonResponse({'status': 'success', 'note': 'order not found locally'})
+    except Exception as e:
+        logger.error(f"Error processing Payuee webhook {event_type}: {e}", exc_info=True)
+        return JsonResponse({'error': str(e)}, status=500)
+
+    return JsonResponse({'status': 'success'})
 
 
-def handle_order_paid(data):
-    """Handle order.paid webhook."""
-    payuee_order_id = data.get('order_id')
-    amount = data.get('amount')
-    currency = data.get('currency')
-    
-    logger.info(f"Payment received for order: {payuee_order_id}")
-    
-    try:
-        order = Order.objects.get(payuee_order_id=payuee_order_id)
-        order.payment_status = 'paid'
-        order.payuee_escrow_status = 'funded'
-        order.status = 'confirmed'
-        order.save()
-        
-        OrderStatusHistory.objects.create(
-            order=order,
-            status='confirmed',
-            notes=f'Payment received: {currency} {amount}. Funds held in escrow.'
-        )
-    
-    except Order.DoesNotExist:
-        logger.error(f"Order not found for Payuee ID: {payuee_order_id}")
-        raise
+def _get_order(order_id):
+    return Order.objects.get(payuee_order_id=str(order_id))
 
 
-def handle_order_verified(data):
-    """Handle order.verified webhook."""
-    payuee_order_id = data.get('order_id')
-    
-    logger.info(f"Order verified in Payuee: {payuee_order_id}")
-    
-    try:
-        order = Order.objects.get(payuee_order_id=payuee_order_id)
-        order.status = 'delivered'
-        order.shipping_status = 'delivered'
-        order.delivered_at = timezone.now()
-        order.payuee_escrow_status = 'completed'
-        order.save()
-        
-        OrderStatusHistory.objects.create(
-            order=order,
-            status='delivered',
-            notes='Delivery verified. Funds released from escrow to seller.'
-        )
-    
-    except Order.DoesNotExist:
-        logger.error(f"Order not found for Payuee ID: {payuee_order_id}")
-        raise
+def handle_order_created(order_id, order_payload):
+    order = _get_order(order_id)
+    order.payuee_escrow_status = 'created'
+    order.status = 'confirmed'
+    order.save()
+    OrderStatusHistory.objects.create(
+        order=order, status='confirmed',
+        notes=f'Escrow order created (Payuee order_id={order_id}).'
+    )
 
 
-def handle_order_refunded(data):
-    """Handle order.refunded webhook."""
-    payuee_order_id = data.get('order_id')
-    amount = data.get('amount')
-    reason = data.get('reason', '')
-    
-    logger.info(f"Order refunded in Payuee: {payuee_order_id}")
-    
-    try:
-        order = Order.objects.get(payuee_order_id=payuee_order_id)
-        order.status = 'refunded'
-        order.payment_status = 'refunded'
-        order.payuee_escrow_status = 'refunded'
-        order.save()
-        
-        # Restore inventory
-        for item in order.items.all():
-            if item.product and item.product.track_inventory:
-                item.product.quantity += item.quantity
-                item.product.save()
-        
-        OrderStatusHistory.objects.create(
-            order=order,
-            status='refunded',
-            notes=f'Order refunded. Amount: {amount}. Reason: {reason}'
-        )
-    
-    except Order.DoesNotExist:
-        logger.error(f"Order not found for Payuee ID: {payuee_order_id}")
-        raise
+def handle_order_on_hold(order_id, order_payload):
+    order = _get_order(order_id)
+    order.payuee_escrow_status = 'on_hold'
+    order.save()
+    OrderStatusHistory.objects.create(
+        order=order, status=order.status,
+        notes='Order placed ON HOLD by Payuee - wallet needs funding within 24 hours or the order will be cancelled.'
+    )
 
 
-def handle_wallet_funded(data):
-    """Handle wallet.funded webhook."""
-    amount = data.get('amount')
-    currency = data.get('currency')
-    transaction_id = data.get('transaction_id')
-    
-    logger.info(f"Wallet funded: {currency} {amount}")
-    
-    # You might want to store this in a transactions table
-    # For now, just log it
-    logger.info(f"Transaction ID: {transaction_id}")
-    
-    # TODO: Store transaction in database if needed
-    # Transaction.objects.create(
-    #     transaction_id=transaction_id,
-    #     amount=amount,
-    #     currency=currency,
-    #     type='wallet_funding'
-    # )
+def handle_order_scanned(order_id, order_payload):
+    order = _get_order(order_id)
+    order.payuee_escrow_status = 'scanned'
+    order.shipping_status = 'shipped'
+    order.save()
+    OrderStatusHistory.objects.create(
+        order=order, status=order.status,
+        notes='Delivery QR code scanned - awaiting final PIN verification.'
+    )
+
+
+def handle_order_delivered(order_id, order_payload):
+    order = _get_order(order_id)
+    order.status = 'delivered'
+    order.shipping_status = 'delivered'
+    order.delivered_at = timezone.now()
+    order.payuee_escrow_status = 'released'
+    order.payment_status = 'paid'
+    order.save()
+    OrderStatusHistory.objects.create(
+        order=order, status='delivered',
+        notes='Delivery verified. Escrow funds released to vendor.'
+    )
+
+
+def handle_order_refunded(order_id, order_payload):
+    order = _get_order(order_id)
+    order.status = 'refunded'
+    order.payment_status = 'refunded'
+    order.payuee_escrow_status = 'refunded'
+    order.save()
+
+    for item in order.items.all():
+        if item.product and item.product.track_inventory:
+            item.product.quantity += item.quantity
+            item.product.save()
+
+    OrderStatusHistory.objects.create(
+        order=order, status='refunded',
+        notes='Order refunded by Payuee. Escrow funds returned to wallet.'
+    )
+
+
+def handle_order_cancelled(order_id, order_payload):
+    order = _get_order(order_id)
+    order.status = 'cancelled'
+    order.payuee_escrow_status = 'cancelled'
+    order.save()
+    OrderStatusHistory.objects.create(
+        order=order, status='cancelled',
+        notes='Order cancelled via Payuee.'
+    )
+
+
+def handle_order_report(order_id, order_payload):
+    order = _get_order(order_id)
+    OrderStatusHistory.objects.create(
+        order=order, status=order.status,
+        notes='Order was reported/flagged for review via Payuee.'
+    )

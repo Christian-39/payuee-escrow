@@ -72,11 +72,14 @@ def get_wallet_balance(request):
         result = client.get_wallet_balance()
         
         if result['success']:
+            # Per docs: GET /v1/wallet/balance returns
+            # {"status": "success", "wallet_balance": <int, smallest unit>, "currency": "NGN"}
+            # wallet_balance is in the smallest currency unit (kobo for NGN) - convert for display.
+            raw_balance = result['data'].get('wallet_balance', 0)
             return Response({
                 'success': True,
-                'balance': result['data'].get('balance', 0),
-                'currency': result['data'].get('currency', 'USD'),
-                'pending_balance': result['data'].get('pending_balance', 0)
+                'balance': raw_balance / 100,
+                'currency': result['data'].get('currency', 'NGN'),
             })
         else:
             return Response(
@@ -100,9 +103,11 @@ def get_payuee_wallet_balance(request):
         result = client.get_wallet_balance()
         
         if result['success']:
+            raw_balance = result['data'].get('wallet_balance', 0)
             return Response({
                 'success': True,
-                'balance': result['data']
+                'balance': raw_balance / 100,
+                'currency': result['data'].get('currency', 'NGN'),
             })
         else:
             return Response(

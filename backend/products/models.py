@@ -72,11 +72,57 @@ class Product(models.Model):
         choices=PRODUCT_SOURCE_CHOICES, 
         default='local'
     )
-    payuee_product_id = models.CharField(
-        max_length=100, 
-        blank=True, 
+    payuee_product_id = models.PositiveIntegerField(
+        blank=True,
         null=True,
-        help_text='Payuee product ID if sourced from Payuee'
+        unique=True,
+        db_index=True,
+        help_text='Payuee product ID (integer, e.g., 92, 255)'
+    )
+    payuee_vendor_id = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text='Payuee vendor ID (eshop_user_id, e.g., 19, 51) - required for shipping-fee calculation'
+    )
+    payuee_vendor_type = models.CharField(
+        max_length=20, blank=True, null=True,
+        help_text='Vendor subscription type (basic, premium, etc.)'
+    )
+    payuee_category = models.CharField(
+        max_length=50, blank=True, null=True, db_index=True,
+        help_text='Payuee category (e.g., outfits, jewelry, gadgets)'
+    )
+    payuee_product_url_id = models.CharField(
+        max_length=255, blank=True, null=True,
+        help_text='Payuee product URL slug (e.g., "italian-shoe-90")'
+    )
+    payuee_net_weight = models.DecimalField(
+        max_digits=8, decimal_places=2, blank=True, null=True,
+        help_text='Product weight in kg from Payuee'
+    )
+    payuee_stock_remaining = models.PositiveIntegerField(
+        blank=True, null=True,
+        help_text='Stock count from Payuee API (stock_remaining field)'
+    )
+    payuee_estimated_delivery = models.PositiveIntegerField(
+        blank=True, null=True,
+        help_text='Estimated delivery days from Payuee'
+    )
+    payuee_clothing_sizes = models.CharField(
+        max_length=100, blank=True, null=True,
+        help_text='Available clothing sizes from Payuee (e.g., "S,M,L,XL")'
+    )
+    payuee_shoe_sizes = models.CharField(
+        max_length=100, blank=True, null=True,
+        help_text='Available shoe sizes from Payuee (e.g., "30-40")'
+    )
+    payuee_tags = models.JSONField(blank=True, default=list, help_text='Product tags from Payuee API')
+    payuee_featured = models.BooleanField(default=False, help_text='Featured flag from Payuee')
+    payuee_on_sale = models.BooleanField(default=False, help_text='On sale flag from Payuee')
+    payuee_last_synced = models.DateTimeField(
+        blank=True, null=True,
+        help_text='Last time product data was synced from Payuee'
     )
     
     # Categorization
@@ -106,7 +152,7 @@ class Product(models.Model):
         blank=True, 
         null=True
     )
-    currency = models.CharField(max_length=3, default='USD')
+    currency = models.CharField(max_length=3, default='NGN')
     
     # Inventory
     quantity = models.PositiveIntegerField(default=0)
@@ -114,8 +160,11 @@ class Product(models.Model):
     track_inventory = models.BooleanField(default=True)
     
     # Images
-    featured_image = models.URLField()
-    images = models.ImageField(upload_to='products/',blank=True, null=True)
+    featured_image = models.URLField(blank=True, null=True)
+    images = models.JSONField(
+        blank=True, default=list,
+        help_text='List of image URLs. For Payuee products, prepend https://payuee.com/image/'
+    )
     
     # Status
     status = models.CharField(
