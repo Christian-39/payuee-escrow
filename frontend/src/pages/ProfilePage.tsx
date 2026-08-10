@@ -38,6 +38,20 @@ interface WalletTransaction {
   created_at: string;
 }
 
+// Helper to safely build image URL from backend path
+const getImageUrl = (path: string | undefined | null): string => {
+  if (!path) return '/default-avatar.png';
+  // If the API already returns an absolute URL, use it as-is
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    return path;
+  }
+  // If it's a relative path, prepend the API base URL from env (fallback to current origin)
+  const baseUrl = import.meta.env.VITE_API_BASE_URL || window.location.origin;
+  // Ensure no double slashes when joining
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  return `${baseUrl}${cleanPath}`;
+};
+
 export default function ProfilePage() {
   const { user, isAuthenticated, isLoading: authLoading, updateUser } = useAuth();
   const navigate = useNavigate();
@@ -211,8 +225,6 @@ export default function ProfilePage() {
     }
   };
 
-  const BASE_URL = 'http://127.0.0.1:8000';
-
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -221,7 +233,9 @@ export default function ProfilePage() {
     uploadData.append('profile_image', file);
     try {
       const response = await api.post('/auth/profile/image/', uploadData, { headers: { 'Content-Type': 'multipart/form-data' } });
-      updateUser({ profile_image: response.data.profile_image });
+      // Accept either profile_image or image_url from backend response
+      const imagePath = response.data.profile_image || response.data.image_url;
+      updateUser({ profile_image: imagePath });
       toast.success('Profile image updated');
     } catch {
       toast.error('Failed to upload image');
@@ -282,7 +296,12 @@ export default function ProfilePage() {
         <div className="flex flex-col md:flex-row items-center gap-6">
           <div className="relative">
             <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-purple-600">
-              <img src={user?.profile_image ? `${BASE_URL}${user.profile_image}` : '/default-avatar.png'} alt={user?.full_name} className="w-full h-full object-cover" />
+              <img 
+                src={getImageUrl(user?.profile_image)} 
+                alt={user?.full_name} 
+                className="w-full h-full object-cover" 
+                onError={(e) => { (e.target as HTMLImageElement).src = '/default-avatar.png'; }}
+              />
             </div>
             <label className="absolute bottom-0 right-0 p-2 bg-purple-600 text-white rounded-full cursor-pointer hover:bg-purple-700 transition-colors">
               <Camera className="w-5 h-5" />
@@ -361,7 +380,7 @@ export default function ProfilePage() {
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}
         className="bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-100 dark:border-gray-700">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-6">Security Settings</h2>
-        
+
         <div className="space-y-4">
           {/* Change Password Row */}
           <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">

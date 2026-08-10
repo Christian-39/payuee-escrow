@@ -47,6 +47,20 @@ const bottomNavLinks = [
   { path: '/profile', icon: User, label: 'Profile' },
 ];
 
+// Helper to safely build image URL from backend path
+const getImageUrl = (path: string | undefined | null): string => {
+  if (!path) return '/default-avatar.png';
+  // If the API already returns an absolute URL, use it as-is
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    return path;
+  }
+  // If it's a relative path, prepend the API base URL from env (fallback to current origin)
+  const baseUrl = import.meta.env.VITE_API_BASE_URL || window.location.origin;
+  // Ensure no double slashes when joining
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  return `${baseUrl}${cleanPath}`;
+};
+
 export default function MainLayout() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
@@ -145,9 +159,10 @@ export default function MainLayout() {
           {isAuthenticated ? (
             <div className="flex items-center gap-3">
               <img
-                src={user?.profile_image || '/default-avatar.png'}
+                src={getImageUrl(user?.profile_image)}
                 alt={user?.full_name}
                 className="w-10 h-10 rounded-full object-cover border-2 border-purple-600"
+                onError={(e) => { (e.target as HTMLImageElement).src = '/default-avatar.png'; }}
               />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
