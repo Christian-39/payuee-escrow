@@ -312,7 +312,7 @@ class ProductView(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True
-    )
+    ) 
     session_id = models.CharField(max_length=100, blank=True, null=True)
     ip_address = models.GenericIPAddressField(blank=True, null=True)
     user_agent = models.TextField(blank=True, null=True)
