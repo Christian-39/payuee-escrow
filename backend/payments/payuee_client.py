@@ -25,7 +25,7 @@ class PayueeClient:
     """Client for the Payuee Escrow API."""
 
     def __init__(self):
-        self.api_key = settings.PAYUEE_API_KEY
+        self.api_key = settings.PAYUEE_API_KEY 
         self.api_secret = settings.PAYUEE_API_SECRET
         self.base_url = getattr(settings, 'PAYUEE_BASE_URL', 'https://escrow.payuee.com')
 
