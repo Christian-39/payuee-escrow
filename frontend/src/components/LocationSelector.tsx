@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MapPin, ChevronDown, Loader2, Navigation } from 'lucide-react';
 import { usePayueeLocation } from '../hooks/usePayueeLocation';
+import { useDropdownClose } from '../hooks/useDropdownClose';
 import { cn } from '../lib/utils';
 
 interface LocationSelectorProps {
@@ -31,6 +32,8 @@ export default function LocationSelector({ onSelect, className }: LocationSelect
 
   const [stateOpen, setStateOpen] = useState(false);
   const [cityOpen, setCityOpen] = useState(false);
+  const stateRef = useDropdownClose<HTMLDivElement>(stateOpen, () => setStateOpen(false));
+  const cityRef = useDropdownClose<HTMLDivElement>(cityOpen, () => setCityOpen(false));
 
   const handleCitySelect = (city: typeof selectedCity) => {
     if (!city) return;
@@ -55,7 +58,7 @@ export default function LocationSelector({ onSelect, className }: LocationSelect
       )}
 
       {/* State Selector */}
-      <div className="relative">
+      <div className="relative" ref={stateRef}>
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
           State
         </label>
@@ -112,7 +115,7 @@ export default function LocationSelector({ onSelect, className }: LocationSelect
       </div>
 
       {/* City/Ward Selector */}
-      <div className="relative">
+      <div className="relative" ref={cityRef}>
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
           City / Area
         </label>

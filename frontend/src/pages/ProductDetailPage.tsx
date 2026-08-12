@@ -48,7 +48,7 @@ export default function ProductDetailPage() {
         const response = await api.get(`/products/${slug}/`);
         if (isMounted) {
           setProduct(response.data);
-          setIsWishlisted(response.data.is_in_wishlist || false);
+          setIsWishlisted(response.data.is_wishlisted || false);
         }
       } catch (error) {
         console.error('Error getting product profile detail logs:', error);
@@ -63,6 +63,57 @@ export default function ProductDetailPage() {
       isMounted = false;
     };
   }, [slug]);
+
+  const [showReviewForm, setShowReviewForm] = useState(false);
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewHoverRating, setReviewHoverRating] = useState(0);
+  const [reviewTitle, setReviewTitle] = useState('');
+  const [reviewComment, setReviewComment] = useState('');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+
+  const handleSubmitReview = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAuthenticated) {
+      toast.error('Please login to write a review');
+      return;
+    }
+    if (reviewRating < 1 || reviewRating > 5) {
+      toast.error('Please select a rating');
+      return;
+    }
+    if (!reviewComment.trim()) {
+      toast.error('Please write a comment');
+      return;
+    }
+
+    setIsSubmittingReview(true);
+    try {
+      const response = await api.post(`/products/${slug}/reviews/create/`, {
+        rating: reviewRating,
+        title: reviewTitle,
+        comment: reviewComment,
+      });
+      setProduct((prev: any) => ({
+        ...prev,
+        reviews: [response.data, ...(prev.reviews || [])],
+        review_count: (prev.review_count || 0) + 1,
+      }));
+      toast.success('Review submitted!');
+      setShowReviewForm(false);
+      setReviewRating(0);
+      setReviewTitle('');
+      setReviewComment('');
+    } catch (error: any) {
+      const data = error.response?.data;
+      const message = typeof data === 'string' ? data
+        : Array.isArray(data?.non_field_errors) ? data.non_field_errors[0]
+        : Array.isArray(data?.detail) ? data.detail[0]
+        : data?.detail || 'Failed to submit review';
+      toast.error(message);
+    } finally {
+      setIsSubmittingReview(false);
+    }
+  };
 
   const handleToggleWishlist = async () => {
     if (!isAuthenticated) {
@@ -220,8 +271,123 @@ export default function ProductDetailPage() {
 
           {activeTab === 'reviews' && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                  Customer Reviews {product?.review_count ? `(${product.review_count})` : ''}
+                </h3>
+                {isAuthenticated && !showReviewForm && (
+                  <button
+                    onClick={() => setShowReviewForm(true)}
+                    className="text-sm font-semibold text-purple-600 hover:text-purple-700"
+                  >
+                    Write a review
+                  </button>
+                )}
+              </div>
+
+              {showReviewForm && (
+                <form
+                  onSubmit={handleSubmitReview}
+                  className="mb-8 p-6 bg-gray-50 dark:bg-gray-800/50 rounded-2xl border border-gray-200 dark:border-gray-700 space-y-4"
+                >
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Your Rating</label>
+                    <div className="flex gap-1">
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <button
+                          key={star}
+                          type="button"
+                          onClick={() => setReviewRating(star)}
+                          onMouseEnter={() => setReviewHoverRating(star)}
+                          onMouseLeave={() => setReviewHoverRating(0)}
+                        >
+                          <Star
+                            className={`w-7 h-7 ${
+                              star <= (reviewHoverRating || reviewRating)
+                                ? 'fill-yellow-400 text-yellow-400'
+                                : 'text-gray-300 dark:text-gray-600'
+                            }`}
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Title (optional)</label>
+                    <input
+                      type="text"
+                      value={reviewTitle}
+                      onChange={(e) => setReviewTitle(e.target.value)}
+                      maxLength={200}
+                      className="w-full px-4 py-2.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Your Review</label>
+                    <textarea
+                      value={reviewComment}
+                      onChange={(e) => setReviewComment(e.target.value)}
+                      rows={4}
+                      required
+                      className="w-full px-4 py-2.5 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      type="submit"
+                      disabled={isSubmittingReview}
+                      className="px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50"
+                    >
+                      {isSubmittingReview ? 'Submitting...' : 'Submit Review'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowReviewForm(false)}
+                      className="px-5 py-2.5 text-gray-600 dark:text-gray-300 font-medium"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Reviews can only be left on products from orders that have been delivered to you.
+                  </p>
+                </form>
+              )}
+
               {reviews.length > 0 ? (
-                <div className="space-y-6">{/* Standard reviews maps list */}</div>
+                <div className="space-y-6">
+                  {reviews.map((review: any) => (
+                    <div key={review.id} className="pb-6 border-b border-gray-100 dark:border-gray-800 last:border-0">
+                      <div className="flex items-center gap-3 mb-2">
+                        <div className="w-10 h-10 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center font-semibold text-purple-600">
+                          {review.user_name?.[0]?.toUpperCase() || '?'}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-gray-900 dark:text-white text-sm">{review.user_name}</span>
+                            {review.is_verified_purchase && (
+                              <span className="text-xs font-medium text-green-600 bg-green-50 dark:bg-green-900/20 px-2 py-0.5 rounded-full">
+                                Verified Purchase
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1 mt-0.5">
+                            {[1, 2, 3, 4, 5].map((star) => (
+                              <Star
+                                key={star}
+                                className={`w-3.5 h-3.5 ${
+                                  star <= review.rating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-300 dark:text-gray-600'
+                                }`}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      {review.title && <p className="font-medium text-gray-900 dark:text-white mb-1">{review.title}</p>}
+                      <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed">{review.comment}</p>
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="text-center py-12 bg-gray-50 dark:bg-gray-800/30 rounded-3xl border-2 border-dashed border-gray-200 dark:border-gray-700">
                   <MessageSquare className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-4" />

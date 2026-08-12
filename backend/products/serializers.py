@@ -180,7 +180,7 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
     """Serializer for product detail view."""
     
     category = CategorySerializer(read_only=True)
-    reviews = ProductReviewSerializer(many=True, read_only=True)
+    reviews = serializers.SerializerMethodField()
     is_in_stock = serializers.BooleanField(read_only=True)
     is_low_stock = serializers.BooleanField(read_only=True)
     discount_percentage = serializers.DecimalField(
@@ -226,6 +226,13 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
                 product=obj
             ).exists()
         return False
+
+    def get_reviews(self, obj):
+        # Only approved reviews, newest first, capped so a heavily-reviewed
+        # product doesn't return an unbounded payload here. Use
+        # /products/<slug>/reviews/ for full paginated review browsing.
+        qs = obj.reviews.filter(is_approved=True).select_related('user').order_by('-created_at')[:20]
+        return ProductReviewSerializer(qs, many=True, context=self.context).data
 
     def get_related_products(self, obj):
         """Get related products from same category."""

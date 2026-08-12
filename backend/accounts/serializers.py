@@ -28,6 +28,7 @@ class UserSerializer(serializers.ModelSerializer):
     
     full_name = serializers.CharField(read_only=True)
     has_complete_profile = serializers.BooleanField(read_only=True)
+    has_payuee_pin = serializers.BooleanField(read_only=True)
     
     class Meta:
         model = User
@@ -36,7 +37,8 @@ class UserSerializer(serializers.ModelSerializer):
             'phone_number', 'profile_image', 'address', 'city', 'state',
             'country', 'postal_code', 'dark_mode', 'email_notifications',
             'push_notifications', 'marketing_emails', 'is_admin', 'is_vendor',
-            'email_verified', 'has_complete_profile', 'created_at', 'updated_at'
+            'email_verified', 'has_complete_profile', 'has_payuee_pin',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'email_verified', 'created_at', 'updated_at']
 
@@ -108,3 +110,23 @@ class UserPreferencesSerializer(serializers.ModelSerializer):
             'dark_mode', 'email_notifications', 
             'push_notifications', 'marketing_emails'
         ]
+
+
+class SetPayueePinSerializer(serializers.Serializer):
+    """Serializer for setting/updating the Payuee escrow transaction PIN.
+    Field name matches what the frontend (PayueePinModal) already posts.
+    """
+    payuee_transaction_pin = serializers.CharField(write_only=True, min_length=6, max_length=6)
+
+    WEAK_PINS = {
+        '000000', '111111', '222222', '333333', '444444',
+        '555555', '666666', '777777', '888888', '999999',
+        '123456', '654321', '121212', '112233', '123123',
+    }
+
+    def validate_payuee_transaction_pin(self, value):
+        if not value.isdigit():
+            raise serializers.ValidationError('PIN must contain only numbers.')
+        if value in self.WEAK_PINS:
+            raise serializers.ValidationError('Please choose a more secure PIN (avoid simple patterns).')
+        return value

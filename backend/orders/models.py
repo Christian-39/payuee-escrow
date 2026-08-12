@@ -192,6 +192,19 @@ class Order(models.Model):
         null=True,
         unique=True
     )
+
+    # Coordinates for the shipping address - required by Payuee's
+    # shipping-fees and order/create endpoints (accurate distance-based
+    # shipping calculation). Previously not collected at all; the checkout
+    # view silently defaulted to 0.0,0.0.
+    shipping_latitude = models.FloatField(blank=True, null=True)
+    shipping_longitude = models.FloatField(blank=True, null=True)
+
+    # Customer-known transaction code for the Payuee escrow order (per
+    # Payuee docs this must be something the customer entered/knows, never
+    # silently auto-generated). Verified against the user's hashed Payuee
+    # PIN (see User.check_payuee_pin) before the order is placed.
+    trans_code = models.CharField(max_length=6, blank=True, null=True)
     
     class Meta:
         db_table = 'orders'

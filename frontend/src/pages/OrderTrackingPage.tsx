@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Package, Truck, CheckCircle, Clock, ChevronLeft, Wallet, AlertTriangle, QrCode, Shield } from 'lucide-react';
+import { Package, Truck, CheckCircle, Clock, ChevronLeft, Wallet, AlertTriangle, QrCode, Shield, XCircle, Flag } from 'lucide-react';
 import api from '../lib/api';
 import type { Order } from '../types';
 import { toast } from 'sonner';
@@ -35,6 +35,11 @@ export default function OrderTrackingPage() {
   const { orderNumber } = useParams<{ orderNumber: string }>();
   const [order, setOrder] = useState<Order | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [pin, setPin] = useState('');
+  const [reportNote, setReportNote] = useState('');
+  const [isSubmittingAction, setIsSubmittingAction] = useState(false);
 
   useEffect(() => {
     if (orderNumber) {
@@ -52,6 +57,54 @@ export default function OrderTrackingPage() {
       setIsLoading(false);
     }
   };
+
+  const handleCancelOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!/^\d{6}$/.test(pin)) {
+      toast.error('Enter your 6-digit Payuee PIN');
+      return;
+    }
+    setIsSubmittingAction(true);
+    try {
+      const response = await api.post(`/orders/${orderNumber}/cancel/`, {
+        trans_code: pin,
+        report_note: reportNote,
+      });
+      setOrder(response.data.order);
+      toast.success('Order cancelled');
+      setShowCancelModal(false);
+      setPin('');
+      setReportNote('');
+    } catch (error: any) {
+      const data = error.response?.data;
+      toast.error(data?.trans_code || data?.error || 'Failed to cancel order');
+    } finally {
+      setIsSubmittingAction(false);
+    }
+  };
+
+  const handleReportOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reportNote.trim()) {
+      toast.error('Please describe the issue');
+      return;
+    }
+    setIsSubmittingAction(true);
+    try {
+      await api.post(`/orders/${orderNumber}/report/`, { report_note: reportNote });
+      toast.success('Report submitted - our team will review it shortly');
+      setShowReportModal(false);
+      setReportNote('');
+    } catch (error: any) {
+      const data = error.response?.data;
+      toast.error(data?.report_note || data?.error || 'Failed to submit report');
+    } finally {
+      setIsSubmittingAction(false);
+    }
+  };
+
+  const isCancellable = order && ['pending', 'confirmed', 'processing'].includes(order.status);
+  const isReportable = order && !['cancelled', 'refunded'].includes(order.status);
 
   const getCurrentStep = () => {
     if (!order) return 0;
@@ -113,6 +166,24 @@ export default function OrderTrackingPage() {
           <p className="text-gray-500 dark:text-gray-400">
             Placed on {formatDate(order.created_at)}
           </p>
+        </div>
+        <div className="ml-auto flex gap-2">
+          {isCancellable && (
+            <button
+              onClick={() => { setReportNote(''); setPin(''); setShowCancelModal(true); }}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+            >
+              <XCircle className="w-4 h-4" /> Cancel Order
+            </button>
+          )}
+          {isReportable && (
+            <button
+              onClick={() => { setReportNote(''); setShowReportModal(true); }}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+            >
+              <Flag className="w-4 h-4" /> Report Issue
+            </button>
+          )}
         </div>
       </div>
 
@@ -457,6 +528,93 @@ export default function OrderTrackingPage() {
           </div>
         </motion.div>
       </div>
+
+      {/* Cancel Order Modal */}
+      {showCancelModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowCancelModal(false)}>
+          <motion.form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleCancelOrder}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm space-y-4"
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Cancel this order?</h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400">Enter your Payuee PIN to confirm cancellation.</p>
+            <input
+              type="password"
+              inputMode="numeric"
+              maxLength={6}
+              value={pin}
+              onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+              placeholder="6-digit PIN"
+              className="w-full px-4 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-red-500"
+            />
+            <textarea
+              value={reportNote}
+              onChange={(e) => setReportNote(e.target.value)}
+              placeholder="Reason (optional)"
+              rows={2}
+              className="w-full px-4 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500"
+            />
+            <div className="flex gap-3">
+              <button
+                type="submit"
+                disabled={isSubmittingAction}
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 disabled:opacity-50"
+              >
+                {isSubmittingAction ? 'Cancelling...' : 'Confirm Cancellation'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCancelModal(false)}
+                className="px-4 py-2.5 text-gray-600 dark:text-gray-300 font-medium"
+              >
+                Keep Order
+              </button>
+            </div>
+          </motion.form>
+        </div>
+      )}
+
+      {/* Report Issue Modal */}
+      {showReportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowReportModal(false)}>
+          <motion.form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleReportOrder}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm space-y-4"
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Report an issue</h3>
+            <textarea
+              value={reportNote}
+              onChange={(e) => setReportNote(e.target.value)}
+              placeholder="Describe the issue with this order..."
+              rows={4}
+              required
+              className="w-full px-4 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500"
+            />
+            <div className="flex gap-3">
+              <button
+                type="submit"
+                disabled={isSubmittingAction}
+                className="flex-1 px-4 py-2.5 bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 disabled:opacity-50"
+              >
+                {isSubmittingAction ? 'Submitting...' : 'Submit Report'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowReportModal(false)}
+                className="px-4 py-2.5 text-gray-600 dark:text-gray-300 font-medium"
+              >
+                Cancel
+              </button>
+            </div>
+          </motion.form>
+        </div>
+      )}
     </div>
   );
 }

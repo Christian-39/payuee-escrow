@@ -16,7 +16,8 @@ from .serializers import (
     UserProfileUpdateSerializer,
     ChangePasswordSerializer,
     UserPreferencesSerializer,
-    CustomTokenObtainPairSerializer
+    CustomTokenObtainPairSerializer,
+    SetPayueePinSerializer
 )
 
 User = get_user_model()
@@ -158,6 +159,21 @@ def upload_profile_image(request):
         'message': 'Uploaded successfully',
         'profile_image': request.user.profile_image.url
     })
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def set_payuee_pin(request):
+    """Set or update the user's Payuee escrow transaction PIN. The PIN is
+    hashed server-side (see User.set_payuee_pin) and never stored or
+    returned in plaintext."""
+    serializer = SetPayueePinSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    request.user.set_payuee_pin(serializer.validated_data['payuee_transaction_pin'])
+    request.user.save(update_fields=['payuee_transaction_pin_hash'])
+
+    return Response({'message': 'Payuee PIN set successfully.', 'has_payuee_pin': True})
+
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])

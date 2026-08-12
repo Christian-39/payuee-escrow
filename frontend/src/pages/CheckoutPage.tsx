@@ -12,6 +12,7 @@ import PayueePinModal from '../pages/PayueePinModal';
 import { useCart } from '../contexts/CartContext';
 import { toast } from 'sonner';
 import { usePayueeLocation } from '../hooks/usePayueeLocation';
+import { useDropdownClose } from '../hooks/useDropdownClose';
 import { cn } from '../lib/utils';
 
 const safeFixed = (value: any, digits = 2) => {
@@ -64,7 +65,7 @@ interface UserProfile {
   first_name: string;
   last_name: string;
   phone_number: string | null;
-  payuee_transaction_pin?: string | null;
+  has_payuee_pin?: boolean;
 }
 
 export default function CheckoutPage() {
@@ -94,6 +95,8 @@ export default function CheckoutPage() {
 
   const [stateOpen, setStateOpen] = useState(false);
   const [cityOpen, setCityOpen] = useState(false);
+  const stateDropdownRef = useDropdownClose<HTMLDivElement>(stateOpen, () => setStateOpen(false));
+  const cityDropdownRef = useDropdownClose<HTMLDivElement>(cityOpen, () => setCityOpen(false));
 
   const [formData, setFormData] = useState({
     shipping_name: '',
@@ -294,74 +297,32 @@ export default function CheckoutPage() {
       return;
     }
 
-    // ── VALIDATE PAYUEE PIN ──
+    // ── VALIDATE PAYUEE PIN (shape only - the backend checks it against the hash) ──
     const cleanTransCode = formData.trans_code.replace(/\D/g, '').slice(0, 6);
     if (!cleanTransCode || cleanTransCode.length !== 6 || !/^\d{6}$/.test(cleanTransCode)) {
       toast.error('Please enter a valid 6-digit Payuee PIN');
       return;
     }
 
-    // Block weak PINs (frontend guard — backend also validates)
-    const weakPins = ['000000', '111111', '222222', '333333', '444444', 
-                      '555555', '666666', '777777', '888888', '999999', '123456'];
-    if (weakPins.includes(cleanTransCode)) {
-      toast.error('Please choose a more secure 6-digit PIN (avoid sequential or repeated digits)');
-      return;
-    }
-
     setIsLoading(true);
 
     try {
-      const customer = {
-        email: formData.email || userProfile?.email || cart.user_email,
-        first_name: formData.shipping_name.split(' ')[0] || formData.shipping_name,
-        last_name: formData.shipping_name.split(' ').slice(1).join(' ') || '',
-        phone_number: formData.shipping_phone,
-        state: formData.shipping_state,
-        city: formData.shipping_city,
-        address_1: formData.shipping_address,
-        address_2: '',
-        latitude: parseFloat(formData.shipping_latitude),
-        longitude: parseFloat(formData.shipping_longitude),
-        order_note: formData.customer_note,
-        zip_code: formData.shipping_postal_code,
-        province: '',
-        save_address: true,
-      };
-
-      const cartItems = (cart.items as CartItem[]).map((item) => {
-        if (!item.product.payuee_product_id) {
-          throw new Error(`"${item.product.name}" is not linked to Payuee.`);
-        }
-
-        const productId = parseInt(String(item.product.payuee_product_id), 10);
-        if (isNaN(productId) || productId <= 0) {
-          throw new Error(`"${item.product.name}" has invalid Payuee product ID.`);
-        }
-
-        return {
-          product_id: productId,
-          cart_meta: {
-            quantity: item.quantity,
-            outfit_size: item.size || '',
-          },
-        };
-      });
-
-      const shipping = shippingOptions.map((opt: ShippingOption) => ({
-        vendor_id: opt.vendor_id,
-        fee: opt.fee,
-        method_id: opt.method_id,
-        config_id: opt.config_id,
-        company_name: opt.company_name,
-      }));
-
-      const response = await api.post('/payments/orders/create/', {
+      // Matches CheckoutSerializer on the backend (POST /api/orders/checkout/).
+      // The backend reads the cart server-side and recalculates shipping via
+      // Payuee itself - it doesn't trust a client-supplied cart or shipping
+      // array, per the "don't invent shipping values on the frontend" rule.
+      const response = await api.post('/orders/checkout/', {
+        shipping_name: formData.shipping_name,
+        shipping_address: formData.shipping_address,
+        shipping_city: formData.shipping_city,
+        shipping_state: formData.shipping_state,
+        shipping_country: formData.shipping_country,
+        shipping_postal_code: formData.shipping_postal_code,
+        shipping_phone: formData.shipping_phone,
+        shipping_latitude: parseFloat(formData.shipping_latitude),
+        shipping_longitude: parseFloat(formData.shipping_longitude),
         trans_code: cleanTransCode,
-        webhook_response_url: window.location.origin + '/webhooks/payuee/',
-        customer,
-        cart_items: cartItems,
-        shipping,
+        customer_note: formData.customer_note,
       });
 
       if (response.data.success) {
@@ -371,13 +332,14 @@ export default function CheckoutPage() {
         } else {
           toast.success('Order placed successfully!');
           refreshCart();
-          navigate(`/orders/${response.data.order_ids?.[0]}/confirmation`);
+          navigate(`/orders/${response.data.order_number}/confirmation`);
         }
       } else {
         toast.error(response.data.error || 'Failed to create order');
       }
     } catch (error: any) {
       let message = 'Failed to place order';
+      if (error.response?.data?.trans_code) message = error.response.data.trans_code;
       if (error.response?.data?.error) message = error.response.data.error;
       if (error.response?.data?.message) message = error.response.data.message;
       if (error.message) message = error.message;
@@ -388,7 +350,7 @@ export default function CheckoutPage() {
   };
 
   // ── GUARD: NO PAYUEE PIN ──
-  const hasPayueePin = !!userProfile?.payuee_transaction_pin;
+  const hasPayueePin = !!userProfile?.has_payuee_pin;
   const isPinValid = /^\d{6}$/.test(formData.trans_code);
 
   if (isLoadingProfile) {
@@ -452,7 +414,7 @@ export default function CheckoutPage() {
                 </div>
 
                 {/* State Dropdown */}
-                <div className="relative">
+                <div className="relative" ref={stateDropdownRef}>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">State *</label>
                   <button type="button" onClick={() => setStateOpen(!stateOpen)} disabled={loadingStates}
                     className={cn('w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-700 border rounded-xl text-left transition-all',
@@ -473,7 +435,7 @@ export default function CheckoutPage() {
                 </div>
 
                 {/* City Dropdown */}
-                <div className="relative">
+                <div className="relative" ref={cityDropdownRef}>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">City / Area *</label>
                   <button type="button" onClick={() => selectedState && setCityOpen(!cityOpen)} disabled={!selectedState || loadingCities}
                     className={cn('w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-700 border rounded-xl text-left transition-all',

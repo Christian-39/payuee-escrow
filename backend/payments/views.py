@@ -122,6 +122,56 @@ def get_payuee_wallet_balance(request):
         )
 
 
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def calculate_shipping_fees(request):
+    """POST /api/payments/shipping-fees/
+
+    Thin proxy to Payuee's shipping-fees endpoint so the checkout page can
+    show a live shipping quote before the order is actually placed. This
+    was previously called by the frontend but never existed on the
+    backend at all - every shipping calculation 404'd.
+
+    Body: { vendors: [int], state, city, latitude, longitude, cart_items }
+    """
+    vendors = request.data.get('vendors')
+    state = request.data.get('state')
+    city = request.data.get('city')
+    latitude = request.data.get('latitude')
+    longitude = request.data.get('longitude')
+    cart_items = request.data.get('cart_items')
+
+    if not vendors or not state or not city or latitude is None or longitude is None or not cart_items:
+        return Response(
+            {'success': False, 'error': 'vendors, state, city, latitude, longitude and cart_items are all required.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        client = PayueeClient()
+        result = client.calculate_shipping_fees(
+            vendors=vendors,
+            state=state,
+            city=city,
+            latitude=float(latitude),
+            longitude=float(longitude),
+            cart_items=cart_items,
+        )
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
+    if not result.get('success'):
+        return Response(
+            {'success': False, 'error': result.get('error', 'Shipping calculation failed')},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    return Response({
+        'success': True,
+        'shipping': result.get('data', {}).get('shipping', []),
+    })
+
+
 # Admin views
 class AdminTransactionListView(generics.ListAPIView):
     """Admin: List all transactions."""

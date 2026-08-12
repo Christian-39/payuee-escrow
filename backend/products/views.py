@@ -426,6 +426,22 @@ def toggle_wishlist(request, product_id):
         })
 
 
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def get_wishlist_count(request):
+    """Count of the current user's wishlist items (used by the profile page)."""
+    count = Wishlist.objects.filter(user=request.user).count()
+    return Response({'count': count})
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def get_reviews_count(request):
+    """Count of reviews the current user has written (used by the profile page)."""
+    count = ProductReview.objects.filter(user=request.user).count()
+    return Response({'count': count})
+
+
 # Product Review Views
 class ProductReviewListView(generics.ListAPIView):
     """List reviews for a product."""
@@ -462,18 +478,32 @@ class ProductReviewCreateView(generics.CreateAPIView):
                 'You have already reviewed this product.'
             )
         
-        # Check if user has purchased this product
+        # Only purchased (delivered) products can be reviewed - this is
+        # enforced, not just recorded as a cosmetic flag.
         from orders.models import OrderItem
         is_verified = OrderItem.objects.filter(
             order__user=self.request.user,
             product=product,
             order__status='delivered'
         ).exists()
+
+        if not is_verified:
+            raise serializers.ValidationError(
+                'You can only review products from orders that have been delivered to you.'
+            )
         
+        # Verified-purchase reviews are auto-approved. is_approved defaults
+        # to False on the model (for a manual admin moderation path), but
+        # nothing ever flipped it to True except editing it by hand in
+        # Django admin - so every review was invisible on the storefront
+        # forever. Since we now only accept reviews from real delivered
+        # orders, auto-approving is safe; admins can still unpublish a
+        # review via is_approved in Django admin if needed.
         review = serializer.save(
             product=product,
             user=self.request.user,
-            is_verified_purchase=is_verified
+            is_verified_purchase=True,
+            is_approved=True,
         )
         
         # Update product rating

@@ -17,6 +17,8 @@ from .views import (
     checkout,
     get_order_summary,
     get_orders_count,
+    cancel_order,
+    report_order,
     # Admin views
     AdminOrderListView,
     AdminOrderDetailView,
@@ -49,4 +51,6 @@ urlpatterns = [
     path('count/', get_orders_count, name='orders-count'),
     path('<str:order_number>/', OrderDetailView.as_view(), name='order_detail'),
     path('<str:order_number>/track/', OrderTrackingView.as_view(), name='order_tracking'),
+    path('<str:order_number>/cancel/', cancel_order, name='cancel_order'),
+    path('<str:order_number>/report/', report_order, name='report_order'),
 ]

@@ -15,6 +15,7 @@ import api from '../lib/api';
 import { toast } from 'sonner';
 import PayueePinModal from '../pages/PayueePinModal';
 import { usePayueeLocation } from '../hooks/usePayueeLocation';
+import { useDropdownClose } from '../hooks/useDropdownClose';
 import { cn } from '../lib/utils';
 
 interface UserStats {
@@ -24,8 +25,8 @@ interface UserStats {
 }
 
 interface WalletBalance {
-  status: string;
-  wallet_balance: number;
+  success: boolean;
+  balance: number;
   currency: string;
 }
 
@@ -78,6 +79,8 @@ export default function ProfilePage() {
 
   const [stateOpen, setStateOpen] = useState(false);
   const [cityOpen, setCityOpen] = useState(false);
+  const stateDropdownRef = useDropdownClose<HTMLDivElement>(stateOpen, () => setStateOpen(false));
+  const cityDropdownRef = useDropdownClose<HTMLDivElement>(cityOpen, () => setCityOpen(false));
 
   const [formData, setFormData] = useState({
     first_name: user?.first_name || '',
@@ -100,12 +103,13 @@ export default function ProfilePage() {
     }
   }, [authLoading, isAuthenticated, navigate]);
 
-  // Check if user has Payuee PIN set
+  // Check if user has Payuee PIN set. The backend never returns the PIN
+  // itself (not even hashed) - only a boolean flag.
   useEffect(() => {
     const checkPinStatus = async () => {
       try {
         const response = await api.get('/auth/profile/');
-        setHasPayueePin(!!response.data.payuee_transaction_pin);
+        setHasPayueePin(!!response.data.has_payuee_pin);
       } catch (error) {
         console.error('Failed to check PIN status:', error);
       }
@@ -131,7 +135,7 @@ export default function ProfilePage() {
     const fetchUserStats = async () => {
       try {
         const [ordersRes, wishlistRes, reviewsRes] = await Promise.allSettled([
-          api.get('/orders/count/'), api.get('/wishlist/count/'), api.get('/reviews/count/'),
+          api.get('/orders/count/'), api.get('/products/wishlist/count/'), api.get('/products/reviews/count/'),
         ]);
         setStats({
           orders_count: ordersRes.status === 'fulfilled' ? ordersRes.value.data.count || 0 : 0,
@@ -152,7 +156,7 @@ export default function ProfilePage() {
       try {
         setWalletLoading(true);
         const [balanceRes, txRes] = await Promise.allSettled([
-          api.get('/payments/wallet/balance/'), api.get('/payments/wallet-transactions/'),
+          api.get('/payments/wallet/balance/'), api.get('/payments/wallet/transactions/'),
         ]);
         if (balanceRes.status === 'fulfilled' && balanceRes.value.data.success) {
           setWalletBalance(balanceRes.value.data);
@@ -173,7 +177,7 @@ export default function ProfilePage() {
     setIsRefreshingWallet(true);
     try {
       const [balanceRes, txRes] = await Promise.allSettled([
-        api.get('/payments/wallet/balance/'), api.get('/payments/wallet-transactions/'),
+        api.get('/payments/wallet/balance/'), api.get('/payments/wallet/transactions/'),
       ]);
       if (balanceRes.status === 'fulfilled' && balanceRes.value.data.success) setWalletBalance(balanceRes.value.data);
       if (txRes.status === 'fulfilled') setWalletTransactions(txRes.value.data.results || txRes.value.data || []);
@@ -185,9 +189,13 @@ export default function ProfilePage() {
     }
   };
 
+  // Both /payments/wallet/balance/ (balance) and /payments/wallet/transactions/
+  // (amount, on WalletTransaction) already return major currency units
+  // (naira, not kobo) - the backend does that conversion once. Do not divide
+  // by 100 again here.
   const formatAmount = (amount: number | undefined, currency: string = 'NGN') => {
     if (amount === undefined || amount === null) return '—';
-    return new Intl.NumberFormat('en-NG', { style: 'currency', currency, minimumFractionDigits: 2 }).format(amount / 100);
+    return new Intl.NumberFormat('en-NG', { style: 'currency', currency, minimumFractionDigits: 2 }).format(amount);
   };
 
   const formatDate = (dateString: string) => {
@@ -342,7 +350,7 @@ export default function ProfilePage() {
                 <div className="flex items-center gap-2 mt-0.5">
                   <h2 className="text-3xl font-bold text-white">
                     {walletLoading ? <span className="inline-block w-28 h-8 bg-white/20 rounded animate-pulse" /> :
-                      showWalletBalance ? formatAmount(walletBalance?.wallet_balance, walletBalance?.currency) : '****'}
+                      showWalletBalance ? formatAmount(walletBalance?.balance, walletBalance?.currency) : '****'}
                   </h2>
                   <button onClick={() => setShowWalletBalance(!showWalletBalance)} className="p-1.5 bg-white/10 rounded-lg hover:bg-white/20 transition-colors">
                     {showWalletBalance ? <EyeOff className="w-3.5 h-3.5 text-white" /> : <Eye className="w-3.5 h-3.5 text-white" />}
@@ -483,7 +491,7 @@ export default function ProfilePage() {
             </div>
 
             {/* State Dropdown */}
-            <div className="relative">
+            <div className="relative" ref={stateDropdownRef}>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">State *</label>
               <button type="button" onClick={() => setStateOpen(!stateOpen)} disabled={loadingStates}
                 className={cn('w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-700 border rounded-xl text-left transition-all',
@@ -504,7 +512,7 @@ export default function ProfilePage() {
             </div>
 
             {/* City Dropdown */}
-            <div className="relative">
+            <div className="relative" ref={cityDropdownRef}>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">City / Area *</label>
               <button type="button" onClick={() => selectedState && setCityOpen(!cityOpen)} disabled={!selectedState || loadingCities}
                 className={cn('w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-700 border rounded-xl text-left transition-all',

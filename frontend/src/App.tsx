@@ -26,6 +26,7 @@ import OrderTrackingPage from './pages/OrderTrackingPage';
 import OrdersPage from './pages/OrdersPage';
 import WishlistPage from './pages/WishlistPage';
 import ProfilePage from './pages/ProfilePage';
+import ChangePasswordPage from './pages/ChangePasswordPage';
 import SettingsPage from './pages/SettingsPage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -72,6 +73,7 @@ function App() {
                   <Route path="wallet" element={<WalletPage />} />
                   <Route path="wishlist" element={<WishlistPage />} />
                   <Route path="profile" element={<ProfilePage />} />
+                  <Route path="profile/change-password" element={<ChangePasswordPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                 </Route>
 

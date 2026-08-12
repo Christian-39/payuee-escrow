@@ -4,7 +4,12 @@
 
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+// NOTE: must match the var name actually set in .env / .env.production
+// (VITE_API_BASE_URL) - this previously read VITE_API_URL, which is never
+// set, so every axios request silently fell back to localhost:8000 even in
+// production builds. That's the root cause of "products/API endpoints not
+// fetching" once deployed.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
 
 const api = axios.create({
   baseURL: API_BASE_URL,

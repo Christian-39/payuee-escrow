@@ -212,6 +212,12 @@ class CheckoutSerializer(serializers.Serializer):
     shipping_country = serializers.CharField(max_length=100)
     shipping_postal_code = serializers.CharField(max_length=20)
     shipping_phone = serializers.CharField(max_length=20)
+    shipping_latitude = serializers.FloatField()
+    shipping_longitude = serializers.FloatField()
+
+    # Customer-entered Payuee transaction PIN, checked against the hash set
+    # via /auth/set-payuee-pin/ before the escrow order is placed.
+    trans_code = serializers.CharField(min_length=6, max_length=6)
     
     # Optional billing address
     use_same_address = serializers.BooleanField(default=True)

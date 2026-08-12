@@ -7,6 +7,7 @@ import { useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Search, SlidersHorizontal, X } from 'lucide-react';
 import api from '../lib/api';
+import { useDropdownClose } from '../hooks/useDropdownClose';
 import type { ProductListItem } from '../types';
 import ProductCard from '../components/ProductCard';
 import { toast } from 'sonner';
@@ -18,6 +19,7 @@ export default function SearchPage() {
   const [products, setProducts] = useState<ProductListItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  const filtersRef = useDropdownClose<HTMLDivElement>(showFilters, () => setShowFilters(false));
   const [filters, setFilters] = useState({
     min_price: '',
     max_price: '',
@@ -70,7 +72,7 @@ export default function SearchPage() {
   return (
     <div className="space-y-6">
       {/* Search Header */}
-      <div className="space-y-4">
+      <div className="space-y-4" ref={filtersRef}>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
           Search Products
         </h1>

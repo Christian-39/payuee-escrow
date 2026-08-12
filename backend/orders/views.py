@@ -246,6 +246,20 @@ def checkout(request):
         data = serializer.validated_data
         logger.info(f"Shipping to: {data['shipping_city']}")
 
+        # Verify the customer-entered PIN before placing a real escrow
+        # order. Do this before any Order/OrderItem rows are created so a
+        # wrong PIN never leaves a half-created order behind.
+        if not request.user.has_payuee_pin:
+            return Response(
+                {'error': 'Set your Payuee transaction PIN in your profile before checking out.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not request.user.check_payuee_pin(data['trans_code']):
+            return Response(
+                {'trans_code': 'Incorrect PIN.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # Calculate totals
         subtotal = sum(item.total_price for item in cart_items)
         shipping_cost = 0
@@ -271,6 +285,9 @@ def checkout(request):
                 shipping_country=data['shipping_country'],
                 shipping_postal_code=data['shipping_postal_code'],
                 shipping_phone=data['shipping_phone'],
+                shipping_latitude=data['shipping_latitude'],
+                shipping_longitude=data['shipping_longitude'],
+                trans_code=data['trans_code'],
                 customer_note=data.get('customer_note', ''),
                 idempotency_key=str(uuid.uuid4())
             )
@@ -311,12 +328,8 @@ def checkout(request):
                 else:
                     vendor_ids = sorted({i.product.payuee_vendor_id for i in payuee_items})
 
-                    # NOTE: customer_latitude/longitude are not currently
-                    # collected by CheckoutSerializer. Defaulting to 0.0 here
-                    # is a stopgap - add lat/lon fields to the checkout form
-                    # and pass real values through for accurate shipping.
-                    customer_lat = getattr(order, 'shipping_latitude', 0.0) or 0.0
-                    customer_lon = getattr(order, 'shipping_longitude', 0.0) or 0.0
+                    customer_lat = float(order.shipping_latitude or 0.0)
+                    customer_lon = float(order.shipping_longitude or 0.0)
 
                     shipping_result = payuee_client.calculate_shipping_fees(
                         vendors=vendor_ids,
@@ -340,19 +353,10 @@ def checkout(request):
                     else:
                         shipping_array = shipping_result['data'].get('shipping', [])
 
-                        # NOTE: trans_code must be a code the customer knows
-                        # (per Payuee docs, never silently auto-generate
-                        # without the customer's awareness). CheckoutSerializer
-                        # doesn't currently collect one - using the order's
-                        # idempotency_key as a stopgap so the call is well-formed;
-                        # replace with a real customer-entered PIN once the
-                        # checkout form collects it.
-                        trans_code = getattr(order, 'trans_code', None) or order.idempotency_key[:6]
-
                         payuee_result = payuee_client.create_order(
                             order,
                             payuee_items,
-                            trans_code=trans_code,
+                            trans_code=order.trans_code,
                             shipping=shipping_array,
                             customer_latitude=customer_lat,
                             customer_longitude=customer_lon,
@@ -400,7 +404,11 @@ def checkout(request):
                 )
 
                 return Response({
+                    'success': True,
                     'message': 'Order created successfully.',
+                    'status': payuee_result.get('status', 'created'),
+                    'order_ids': order_ids,
+                    'order_number': order.order_number,
                     'order': OrderDetailSerializer(order).data,
                     'payuee_order_ids': order_ids,
                 }, status=status.HTTP_201_CREATED)
@@ -419,7 +427,10 @@ def checkout(request):
                 )
 
                 return Response({
+                    'success': False,
                     'message': 'Order created. Payment pending.',
+                    'error': payuee_result.get('error') if payuee_result else 'unknown',
+                    'order_number': order.order_number,
                     'order': OrderDetailSerializer(order).data,
                     'payment_url': None,
                     'warning': 'Payment service temporarily unavailable.'
@@ -561,6 +572,79 @@ class AdminShippingUpdateView(generics.UpdateAPIView):
             'message': 'Shipping information updated.',
             'order': OrderDetailSerializer(instance).data
         })
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def cancel_order(request, order_number):
+    """POST /v1/order/cancel - customer-initiated cancellation.
+
+    Only allowed while the order hasn't shipped yet. Requires the
+    customer's Payuee PIN as trans_code, same as at checkout.
+    """
+    order = get_object_or_404(Order, order_number=order_number, user=request.user)
+
+    if order.status not in ('pending', 'confirmed', 'processing'):
+        return Response(
+            {'error': f'Orders that are already {order.status} can no longer be cancelled here.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    trans_code = request.data.get('trans_code', '')
+    if not request.user.check_payuee_pin(trans_code):
+        return Response({'trans_code': 'Incorrect PIN.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    report_note = request.data.get('report_note', '')
+
+    if order.payuee_order_id:
+        payuee_client = PayueeClient()
+        result = payuee_client.cancel_order(order.payuee_order_id, trans_code, report_note)
+        if not result.get('success'):
+            return Response(
+                {'error': result.get('error', 'Failed to cancel order with Payuee.')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    order.status = 'cancelled'
+    order.save()
+    OrderStatusHistory.objects.create(
+        order=order,
+        status='cancelled',
+        notes=report_note or 'Cancelled by customer.',
+        created_by=request.user
+    )
+
+    return Response({'message': 'Order cancelled.', 'order': OrderDetailSerializer(order).data})
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def report_order(request, order_number):
+    """POST /v1/order/report - customer reports a problem with an order
+    (e.g. item not as described, damaged, never arrived)."""
+    order = get_object_or_404(Order, order_number=order_number, user=request.user)
+
+    report_note = request.data.get('report_note', '').strip()
+    if not report_note:
+        return Response({'report_note': 'Please describe the issue.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if order.payuee_order_id:
+        payuee_client = PayueeClient()
+        result = payuee_client.report_order(order.payuee_order_id, report_note)
+        if not result.get('success'):
+            return Response(
+                {'error': result.get('error', 'Failed to submit report to Payuee.')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    OrderStatusHistory.objects.create(
+        order=order,
+        status=order.status,
+        notes=f'Customer report: {report_note}',
+        created_by=request.user
+    )
+
+    return Response({'message': 'Report submitted. Our team will review it shortly.'})
 
 
 @api_view(['POST'])

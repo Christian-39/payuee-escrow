@@ -13,6 +13,7 @@ from .views import (
     ChangePasswordView,
     UserPreferencesView,
     upload_profile_image,
+    set_payuee_pin,
     user_stats
 )
 
@@ -30,6 +31,9 @@ urlpatterns = [
     
     # Password
     path('password/change/', ChangePasswordView.as_view(), name='change_password'),
+
+    # Payuee escrow transaction PIN
+    path('set-payuee-pin/', set_payuee_pin, name='set_payuee_pin'),
     
     # Preferences
     path('preferences/', UserPreferencesView.as_view(), name='preferences'),

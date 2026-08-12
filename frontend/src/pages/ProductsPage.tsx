@@ -11,6 +11,7 @@ import type { ProductListItem, Category } from '../types';
 import ProductCard from '../components/ProductCard';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
+import { useDropdownClose } from '../hooks/useDropdownClose';
 
 const sortOptions = [
   { value: '-created_at', label: 'Newest First' },
@@ -19,7 +20,7 @@ const sortOptions = [
   { value: '-average_rating', label: 'Highest Rated' },
   { value: 'name', label: 'Name: A-Z' },
 ];
-const BASE_URL = import.meta.env.VITE_API_URL || '';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 export default function ProductsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [products, setProducts] = useState<ProductListItem[]>([]);
@@ -28,6 +29,7 @@ export default function ProductsPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [showFilters, setShowFilters] = useState(false);
+  const filtersRef = useDropdownClose<HTMLDivElement>(showFilters, () => setShowFilters(false));
 
   // Filter states
   const [selectedCategory, setSelectedCategory] = useState(searchParams.get('category') || '');
@@ -118,7 +120,8 @@ export default function ProductsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header + Filters (one boundary so outside-click/scroll closes the panel) */}
+      <div ref={filtersRef}>
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
@@ -173,7 +176,7 @@ export default function ProductsPage() {
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           exit={{ opacity: 0, height: 0 }}
-          className="bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-200 dark:border-gray-700"
+          className="bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-200 dark:border-gray-700 mt-6"
         >
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -268,6 +271,7 @@ export default function ProductsPage() {
           </div>
         </motion.div>
       )}
+      </div>
 
       {/* Products Grid */}
       {isLoading ? (

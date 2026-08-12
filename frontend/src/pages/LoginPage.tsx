@@ -41,15 +41,32 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 p-4">
+    <div className="min-h-screen flex bg-gray-50 dark:bg-gray-900">
+      {/* Desktop brand panel - fills the other half of the screen so the
+          form isn't a small card floating in a sea of empty space */}
+      <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-purple-600 via-purple-700 to-indigo-800 items-center justify-center p-12 relative overflow-hidden">
+        <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=1920&q=80')] bg-cover bg-center opacity-10" />
+        <div className="relative text-center max-w-md">
+          <div className="w-20 h-20 bg-white/15 backdrop-blur-sm rounded-2xl flex items-center justify-center mx-auto mb-8">
+            <Store className="w-11 h-11 text-white" />
+          </div>
+          <h1 className="text-4xl font-bold text-white mb-4">GadgetHub</h1>
+          <p className="text-purple-100 text-lg leading-relaxed">
+            Shop the latest gadgets with secure, escrow-protected checkout on every order.
+          </p>
+        </div>
+      </div>
+
+      {/* Login form */}
+      <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
-        className="w-full max-w-md"
+        className="w-full max-w-md lg:max-w-lg"
       >
-        {/* Logo */}
-        <div className="text-center mb-8">
+        {/* Logo (mobile/tablet only - desktop shows the brand panel instead) */}
+        <div className="text-center mb-8 lg:hidden">
           <Link to="/" className="inline-flex items-center gap-3">
             <div className="w-14 h-14 bg-purple-600 rounded-2xl flex items-center justify-center shadow-lg shadow-purple-600/25">
               <Store className="w-8 h-8 text-white" />
@@ -62,9 +79,13 @@ export default function LoginPage() {
             Welcome back! Please login to continue
           </p>
         </div>
+        <div className="hidden lg:block mb-8">
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Welcome back</h2>
+          <p className="mt-2 text-gray-500 dark:text-gray-400">Please login to continue to your account</p>
+        </div>
 
         {/* Form */}
-        <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-xl p-8">
+        <div className="bg-white dark:bg-gray-800 rounded-3xl shadow-xl p-8 lg:p-10">
           <form onSubmit={handleSubmit} className="space-y-6">
             {/* Email */}
             <div>
@@ -124,12 +145,13 @@ export default function LoginPage() {
                   Remember me
                 </span>
               </label>
-              <Link
-                to="/forgot-password"
+              <button
+                type="button"
+                onClick={() => toast.info('Password reset isn\'t available yet — contact support to reset your password.')}
                 className="text-sm text-purple-600 hover:text-purple-700 font-medium"
               >
                 Forgot password?
-              </Link>
+              </button>
             </div>
 
             {/* Submit */}
@@ -207,6 +229,7 @@ export default function LoginPage() {
           </Link>
         </p>
       </motion.div>
+      </div>
     </div>
   );
 }

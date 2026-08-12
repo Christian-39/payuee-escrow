@@ -41,6 +41,11 @@ class User(AbstractUser):
     # Email verification
     email_verified = models.BooleanField(default=False)
     email_verified_at = models.DateTimeField(blank=True, null=True)
+
+    # Payuee escrow transaction PIN - stored as a hash, never in plaintext.
+    # Reuses Django's password hasher (set_password/check_password style)
+    # rather than a bespoke scheme.
+    payuee_transaction_pin_hash = models.CharField(max_length=128, blank=True, null=True)
     
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username', 'first_name', 'last_name']
@@ -58,6 +63,20 @@ class User(AbstractUser):
     def full_name(self):
         return f"{self.first_name} {self.last_name}".strip()
     
+    @property
+    def has_payuee_pin(self):
+        return bool(self.payuee_transaction_pin_hash)
+
+    def set_payuee_pin(self, raw_pin):
+        from django.contrib.auth.hashers import make_password
+        self.payuee_transaction_pin_hash = make_password(raw_pin)
+
+    def check_payuee_pin(self, raw_pin):
+        from django.contrib.auth.hashers import check_password
+        if not self.payuee_transaction_pin_hash:
+            return False
+        return check_password(raw_pin, self.payuee_transaction_pin_hash)
+
     @property
     def has_complete_profile(self):
         """Check if user has completed their profile."""
