@@ -25,12 +25,19 @@ class PayueeClient:
     """Client for the Payuee Escrow API."""
 
     def __init__(self):
-        self.api_key = settings.PAYUEE_API_KEY 
+        self.api_key = settings.PAYUEE_API_KEY
         self.api_secret = settings.PAYUEE_API_SECRET
-        self.base_url = getattr(settings, 'PAYUEE_BASE_URL', 'https://escrow.payuee.com')
+        # Normalize base_url: strip trailing /v1 if the user included it, then append /v1 ourselves
+        raw_base = getattr(settings, 'PAYUEE_BASE_URL', 'https://escrow.payuee.com')
+        raw_base = raw_base.rstrip('/')
+        if raw_base.endswith('/v1'):
+            raw_base = raw_base[:-3]
+        self.base_url = f"{raw_base.rstrip('/')}"
 
         if not all([self.api_key, self.api_secret, self.base_url]):
             raise ValueError("Payuee API credentials not configured")
+
+        logger.info(f"[PayueeClient] initialised with base_url={self.base_url}")
 
     # ------------------------------------------------------------------
     # Signing
@@ -124,10 +131,8 @@ class PayueeClient:
             'X-Payuee-Public-Key': self.api_key,
         }
 
-        # Idempotency key is required on mutating (POST) requests to guard
-        # against duplicate processing on retry/timeout.
-        if method.upper() == 'POST':
-            headers_base['X-Payuee-Idempotency-Key'] = idempotency_key or str(uuid.uuid4())
+        # Idempotency key is required on ALL requests per Payuee docs examples.
+        headers_base['X-Payuee-Idempotency-Key'] = idempotency_key or str(uuid.uuid4())
 
         last_error = 'Unknown error'
         last_status = None
@@ -140,6 +145,17 @@ class PayueeClient:
                 'X-Payuee-Timestamp': timestamp,
             }
 
+            # ── LOG OUTGOING REQUEST ──
+            logger.info(
+                f"[Payuee] >>> {method.upper()} {url} | "
+                f"attempt={attempt}/{max_attempts} | "
+                f"body_len={len(body)} | "
+                f"headers={{Content-Type, Authorization, X-Payuee-Public-Key, "
+                f"X-Payuee-Idempotency-Key, X-Payuee-Signature, X-Payuee-Timestamp}}"
+            )
+            if body:
+                logger.debug(f"[Payuee] >>> BODY: {body}")
+
             try:
                 response = requests.request(
                     method=method,
@@ -150,16 +166,34 @@ class PayueeClient:
                 )
             except requests.exceptions.RequestException as e:
                 last_error = str(e)
-                logger.error(f"Payuee network error on {method} {path} (attempt {attempt}): {e}")
+                logger.error(f"[Payuee] Network error on {method} {path} (attempt {attempt}): {e}")
                 if attempt < max_attempts:
-                    time.sleep(min(2 ** attempt, 30))
+                    delay = min(2 ** attempt, 30)
+                    logger.info(f"[Payuee] Retrying in {delay}s…")
+                    time.sleep(delay)
                     continue
                 return {'success': False, 'error': last_error}
 
+            # ── LOG RAW RESPONSE ──
+            logger.info(
+                f"[Payuee] <<< {method.upper()} {path} | "
+                f"status={response.status_code} | "
+                f"content_len={len(response.content)}"
+            )
+            # Log a snippet of the response body (avoid logging huge payloads in production if needed)
+            try:
+                resp_text = response.text
+                logger.debug(f"[Payuee] <<< BODY: {resp_text[:2000]}")
+            except Exception:
+                pass
+
             if response.status_code in (200, 201):
                 try:
-                    return {'success': True, 'data': response.json(), 'status_code': response.status_code}
+                    parsed = response.json()
+                    logger.info(f"[Payuee] <<< Success JSON keys: {list(parsed.keys())}")
+                    return {'success': True, 'data': parsed, 'status_code': response.status_code}
                 except ValueError:
+                    logger.warning(f"[Payuee] <<< Success but non-JSON body")
                     return {'success': True, 'data': {}, 'status_code': response.status_code}
 
             # Parse error body (never log secrets/headers with credentials).
@@ -172,11 +206,11 @@ class PayueeClient:
             last_error = error_data.get('error', {}).get('message') if isinstance(error_data.get('error'), dict) \
                 else error_data.get('message', error_data.get('error', 'Unknown error'))
 
-            logger.error(f"Payuee API error on {method} {path}: {response.status_code} - {last_error}")
+            logger.error(f"[Payuee] API error on {method} {path}: {response.status_code} - {last_error}")
 
             if response.status_code in RETRYABLE_STATUS_CODES and attempt < max_attempts:
                 delay = min(1 * (2 ** attempt), 30)
-                logger.info(f"Retrying {method} {path} in {delay}s (attempt {attempt + 1}/{max_attempts})")
+                logger.info(f"[Payuee] Retrying {method} {path} in {delay}s (attempt {attempt + 1}/{max_attempts})")
                 time.sleep(delay)
                 continue
 
@@ -261,6 +295,8 @@ class PayueeClient:
 
             pagination = payload.get('pagination', {})
             total_pages = pagination.get('TotalPages', page)
+
+            logger.info(f"[Payuee] Fetched page {page}/{total_pages}, got {len(products)} products")
 
             if not products or page >= total_pages:
                 break

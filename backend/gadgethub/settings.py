@@ -216,9 +216,10 @@ LOGGING = {
         },
     },
     'loggers': {
-        'products': {  # Add this
+        'payuee': {
             'handlers': ['console'],
-            'level': 'INFO',
+            'level': 'DEBUG',
+            'propagate': False,
         },
     },
 }

@@ -187,3 +187,149 @@ class AdminTransactionDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAdminUser]
     queryset = Transaction.objects.all().select_related('user', 'order')
     lookup_field = 'id'
+
+
+# ------------------------------------------------------------------
+# Product views (previously missing!)
+# ------------------------------------------------------------------
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def list_store_products(request):
+    """
+    POST /api/payments/products/
+
+    Thin proxy to Payuee's store products. Supports pagination and filters.
+    Body keys: category, page_number, sort_option, min_price, max_price,
+               min_weight, max_weight, user_lat, user_lon, max_distance, tags
+    """
+    client = PayueeClient()
+    result = client.get_store_products(
+        category=request.data.get('category', 'all'),
+        page_number=int(request.data.get('page_number', 1)),
+        sort_option=int(request.data.get('sort_option', 8)),
+        min_price=request.data.get('min_price'),
+        max_price=request.data.get('max_price'),
+        min_weight=request.data.get('min_weight'),
+        max_weight=request.data.get('max_weight'),
+        user_lat=request.data.get('user_lat'),
+        user_lon=request.data.get('user_lon'),
+        max_distance=int(request.data.get('max_distance', 100)),
+        tags=request.data.get('tags'),
+    )
+
+    if not result.get('success'):
+        status_code = result.get('status_code', 400)
+        return Response(
+            {'success': False, 'error': result.get('error', 'Product fetch failed')},
+            status=status_code if status_code >= 400 else 400
+        )
+
+    return Response({
+        'success': True,
+        'data': result.get('data', {}),
+    })
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def search_store_products(request):
+    """
+    POST /api/payments/products/search/
+
+    Thin proxy to Payuee product search.
+    """
+    client = PayueeClient()
+    result = client.search_products(
+        search_term=request.data.get('search_term', ''),
+        limit=int(request.data.get('limit', 20)),
+        category=request.data.get('category', 'all'),
+        page_number=int(request.data.get('page_number', 1)),
+        sort_option=int(request.data.get('sort_option', 8)),
+        min_price=request.data.get('min_price'),
+        max_price=request.data.get('max_price'),
+        min_weight=request.data.get('min_weight'),
+        max_weight=request.data.get('max_weight'),
+        tags=request.data.get('tags'),
+    )
+
+    if not result.get('success'):
+        status_code = result.get('status_code', 400)
+        return Response(
+            {'success': False, 'error': result.get('error', 'Search failed')},
+            status=status_code if status_code >= 400 else 400
+        )
+
+    return Response({
+        'success': True,
+        'data': result.get('data', {}),
+    })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def product_detail(request, product_id):
+    """
+    GET /api/payments/products/<product_id>/
+    """
+    client = PayueeClient()
+    result = client.get_product(product_id)
+
+    if not result.get('success'):
+        status_code = result.get('status_code', 400)
+        return Response(
+            {'success': False, 'error': result.get('error', 'Product not found')},
+            status=status_code if status_code >= 400 else 400
+        )
+
+    return Response({
+        'success': True,
+        'data': result.get('data', {}),
+    })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def list_payuee_states(request):
+    """GET /api/payments/location/states/"""
+    client = PayueeClient()
+    result = client.get_states()
+
+    if not result.get('success'):
+        status_code = result.get('status_code', 400)
+        return Response(
+            {'success': False, 'error': result.get('error', 'Failed to fetch states')},
+            status=status_code if status_code >= 400 else 400
+        )
+
+    return Response({
+        'success': True,
+        'data': result.get('data', {}),
+    })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def list_payuee_cities(request):
+    """GET /api/payments/location/cities/?state=Lagos"""
+    state = request.query_params.get('state')
+    if not state:
+        return Response(
+            {'success': False, 'error': 'state query parameter is required.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    client = PayueeClient()
+    result = client.get_cities(state)
+
+    if not result.get('success'):
+        status_code = result.get('status_code', 400)
+        return Response(
+            {'success': False, 'error': result.get('error', 'Failed to fetch cities')},
+            status=status_code if status_code >= 400 else 400
+        )
+
+    return Response({
+        'success': True,
+        'data': result.get('data', {}),
+    })
