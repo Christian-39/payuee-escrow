@@ -107,16 +107,12 @@ class PayueeClient:
         idempotency_key: Optional[str] = None,
         max_attempts: int = 3,
     ) -> Dict[str, Any]:
-        """
-        Make an authenticated request to the Payuee API.
-
-        Retries with exponential backoff ONLY on 429/500/502/503 responses and
-        on network-level exceptions (timeouts/connection errors). 4xx client
-        errors (400/401/403/404/409) are never retried, per Payuee's guidance.
-        """
         url = f"{self.base_url}{path}"
 
         body = json.dumps(data, separators=(',', ':'), sort_keys=True) if data else ''
+
+        # Path used for HMAC must NEVER include the query string
+        sign_path = path.split('?')[0]
 
         headers_base = {
             'Content-Type': 'application/json',
@@ -124,8 +120,6 @@ class PayueeClient:
             'X-Payuee-Public-Key': self.api_key,
         }
 
-        # Idempotency key is required on mutating (POST) requests to guard
-        # against duplicate processing on retry/timeout.
         if method.upper() == 'POST':
             headers_base['X-Payuee-Idempotency-Key'] = idempotency_key or str(uuid.uuid4())
 
@@ -133,7 +127,8 @@ class PayueeClient:
         last_status = None
 
         for attempt in range(1, max_attempts + 1):
-            signature, timestamp = self.generate_signature(method, path, body)
+            # FIXED: use sign_path (no query string) instead of path
+            signature, timestamp = self.generate_signature(method, sign_path, body)
             headers = {
                 **headers_base,
                 'X-Payuee-Signature': signature,
