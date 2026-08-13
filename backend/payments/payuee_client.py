@@ -232,12 +232,6 @@ class PayueeClient:
         category: str = 'all',
         max_distance: int = 10000,
     ) -> Dict[str, Any]:
-        """
-        Page through POST /v1/products up to `max_pages` and return the
-        combined product list under the same 'success' key shape the
-        single-page endpoint uses, so existing callers don't need to change.
-        Stops early once TotalPages (from the API's pagination block) is reached.
-        """
         all_products: List[Dict] = []
         stores: List[Dict] = []
         page = 1
@@ -250,17 +244,25 @@ class PayueeClient:
             )
             if not result.get('success'):
                 if page == 1:
-                    # First page failed outright - surface the error.
                     return result
                 break
 
-            payload = result.get('data', {})
-            products = payload.get('success', [])
-            all_products.extend(products)
-            stores.extend(payload.get('stores', []))
+            payload = result.get('data', {}) or {}
 
-            pagination = payload.get('pagination', {})
+            # Defensive: API may return null instead of []
+            products = payload.get('success') or []
+            stores_list = payload.get('stores') or []
+
+            all_products.extend(products)
+            stores.extend(stores_list)
+
+            pagination = payload.get('pagination', {}) or {}
             total_pages = pagination.get('TotalPages', page)
+
+            logger.info(
+                f"[Payuee] Fetched page {page}/{total_pages}, "
+                f"got {len(products)} products, {len(stores_list)} stores"
+            )
 
             if not products or page >= total_pages:
                 break
