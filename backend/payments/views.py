@@ -159,7 +159,7 @@ def _normalize_payuee_list_payload(raw, list_key):
     if isinstance(raw, list):
         return raw
     if isinstance(raw, dict):
-        for key in (list_key, 'success', 'data', 'results'):
+        for key in (list_key, 'lga', 'success', 'data', 'results'):
             value = raw.get(key)
             if isinstance(value, list):
                 return value
