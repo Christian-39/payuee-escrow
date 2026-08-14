@@ -140,7 +140,21 @@ class ProductListSerializer(serializers.ModelSerializer, BaseProductMixin):
             'id', 'name', 'slug', 'sku', 'price', 'compare_at_price',
             'discount_percentage', 'featured_image', 'category',
             'is_in_stock', 'average_rating', 'review_count',
-            'is_featured', 'is_wishlisted', 'created_at', 'source'
+            'is_featured', 'is_wishlisted', 'created_at', 'source',
+            # Required by the frontend's cart/checkout shipping-fee flow
+            # (CartPage.tsx/CheckoutPage.tsx read
+            # item.product.payuee_vendor_id and .payuee_product_id to
+            # build the /v1/order/shipping-fees request). This serializer
+            # backs CartItemSerializer.product (see orders/serializers.py)
+            # - without these two fields, EVERY cart's shipping
+            # calculation failed with "<product> is missing vendor info"
+            # regardless of which product it actually was, because the
+            # API response never carried the field the frontend was
+            # checking in the first place. ProductDetailSerializer already
+            # exposes payuee_product_id (line ~199) but this list
+            # serializer never did, and neither ever exposed
+            # payuee_vendor_id at all.
+            'payuee_product_id', 'payuee_vendor_id',
         ]
 
     def get_featured_image(self, obj):
@@ -197,6 +211,7 @@ class ProductDetailSerializer(serializers.ModelSerializer, BaseProductMixin):
         model = Product
         fields = [
             'id', 'name', 'slug', 'sku', 'source', 'payuee_product_id',
+            'payuee_vendor_id',
             'description', 'short_description', 'specifications',
             'price', 'compare_at_price', 'discount_percentage', 'currency',
             'quantity', 'is_in_stock', 'is_low_stock', 'low_stock_threshold',
