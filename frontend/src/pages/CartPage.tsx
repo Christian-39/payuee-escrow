@@ -75,7 +75,14 @@ export default function CartPage() {
     try {
       await removeFromCart(itemId);
       // Recalculate shipping if location is selected
-      if (selectedLocation && cart?.items.length > 1) {
+      // `cart?.items.length` (before the fix) only guards the `.items`
+      // access - if `cart` were ever null right after a removal, `.length`
+      // on the resulting `undefined` throws, and this whole block is
+      // inside handleRemove's try/catch, which silently swallows it (see
+      // the catch below) - meaning a real error here could look like
+      // "nothing happened" after clicking remove. `?? 0` makes the
+      // comparison safe in that edge case.
+      if (selectedLocation && (cart?.items.length ?? 0) > 1) {
         calculateShipping(selectedLocation);
       } else {
         setShippingOptions([]);
