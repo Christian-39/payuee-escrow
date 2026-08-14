@@ -110,10 +110,6 @@ class PayueeClient:
         url = f"{self.base_url}{path}"
 
         body = json.dumps(data, separators=(',', ':'), sort_keys=True) if data else ''
-
-        # Path used for HMAC must NEVER include the query string
-        sign_path = path.split('?')[0]
-
         headers_base = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {self.api_secret}',
@@ -127,8 +123,8 @@ class PayueeClient:
         last_status = None
 
         for attempt in range(1, max_attempts + 1):
-            # FIXED: use sign_path (no query string) instead of path
-            signature, timestamp = self.generate_signature(method, sign_path, body)
+            # Use the FULL path (including ?state=Anambra) for HMAC
+            signature, timestamp = self.generate_signature(method, path, body)
             headers = {
                 **headers_base,
                 'X-Payuee-Signature': signature,
