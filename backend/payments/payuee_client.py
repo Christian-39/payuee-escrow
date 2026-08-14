@@ -110,6 +110,10 @@ class PayueeClient:
         url = f"{self.base_url}{path}"
 
         body = json.dumps(data, separators=(',', ':'), sort_keys=True) if data else ''
+
+        # Payuee HMAC is validated against the path WITHOUT query string
+        sign_path = path.split('?')[0]
+
         headers_base = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {self.api_secret}',
@@ -123,8 +127,7 @@ class PayueeClient:
         last_status = None
 
         for attempt in range(1, max_attempts + 1):
-            # Use the FULL path (including ?state=Anambra) for HMAC
-            signature, timestamp = self.generate_signature(method, path, body)
+            signature, timestamp = self.generate_signature(method, sign_path, body)
             headers = {
                 **headers_base,
                 'X-Payuee-Signature': signature,
@@ -146,6 +149,9 @@ class PayueeClient:
                     time.sleep(min(2 ** attempt, 30))
                     continue
                 return {'success': False, 'error': last_error}
+
+            # ── TEMPORARY DEBUG: log raw response ──
+            logger.info(f"PAYUEE RAW {method} {path} -> {response.status_code} | {response.text[:1000]}")
 
             if response.status_code in (200, 201):
                 try:
