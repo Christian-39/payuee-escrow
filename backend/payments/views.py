@@ -199,6 +199,7 @@ class PayueeLocationCitiesView(APIView):
         client = get_payuee_client()
         result = client.get_cities(state)
         logger.debug(f"Payuee cities response for state={state}: {result}")
+        logger.info(f"PAYUEE CITIES RAW for state={state}: {result}")
 
         if result.get('success'):
             cities = _normalize_payuee_list_payload(result.get('data'), 'cities')
