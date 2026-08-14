@@ -47,36 +47,63 @@ api.interceptors.request.use(
   }
 );
 
+// Requests to these paths must NOT trigger the auto-refresh-and-redirect
+// flow below. In particular /auth/profile/ is called on every single page
+// load (AuthContext's refreshUser, on mount) purely to check "is there a
+// valid session?" - for a logged-out visitor that's an *expected* 401,
+// not a session that "expired mid-use". Previously that 401 fell through
+// to the same refresh-then-redirect logic as everything else: refresh
+// also 401'd (no refresh cookie for an anonymous visitor), and the
+// catch below did `window.location.href = '/login'` unconditionally -
+// including when already sitting on /login, which just reassigning
+// location.href *still forces a reload* even to the same URL. That
+// produced an infinite reload loop on first paint for every anonymous
+// visitor (matches "login page refreshes immediately", and everything
+// downstream of it - cart/wishlist/upload/search all failing - was
+// simply the page never staying alive long enough to finish any of those
+// requests).
+const AUTH_CHECK_PATHS = ['/auth/profile/', '/auth/refresh/', '/auth/login/', '/auth/register/', '/auth/logout/'];
+
+function isAuthCheckRequest(url?: string): boolean {
+  if (!url) return false;
+  return AUTH_CHECK_PATHS.some((path) => url.includes(path));
+}
+
 // Response interceptor - handle token refresh
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
 
-    // If error is 401 and we haven't tried to refresh token yet
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true;
-
-      try {
-        // No body needed - the refresh token is read straight from its
-        // own httpOnly cookie server-side. A successful response sets
-        // fresh access/refresh/csrf cookies automatically; there's
-        // nothing to store here.
-        await axios.post(`${API_BASE_URL}/auth/refresh/`, {}, { withCredentials: true });
-
-        // Retry the original request - the new access-token cookie will
-        // be attached automatically via withCredentials.
-        return api(originalRequest);
-      } catch (refreshError) {
-        // Refresh failed (refresh cookie missing/expired/blacklisted) -
-        // the API has already cleared any stale cookies it could; just
-        // reflect that in app state and send the user to log in again.
-        window.location.href = '/login';
-        return Promise.reject(refreshError);
-      }
+    if (error.response?.status !== 401 || originalRequest._retry || isAuthCheckRequest(originalRequest?.url)) {
+      return Promise.reject(error);
     }
 
-    return Promise.reject(error);
+    originalRequest._retry = true;
+
+    try {
+      // No body needed - the refresh token is read straight from its
+      // own httpOnly cookie server-side. A successful response sets
+      // fresh access/refresh/csrf cookies automatically; there's
+      // nothing to store here.
+      await axios.post(`${API_BASE_URL}/auth/refresh/`, {}, { withCredentials: true });
+
+      // Retry the original request - the new access-token cookie will
+      // be attached automatically via withCredentials.
+      return api(originalRequest);
+    } catch (refreshError) {
+      // Refresh failed (refresh cookie missing/expired/blacklisted) - the
+      // user genuinely isn't authenticated. Only force navigation if
+      // we're not already on /login (or /register), so this can never
+      // turn into a self-reload loop; AuthContext's own state (user:
+      // null) already reflects "logged out" for everything else on the
+      // page without a hard navigation.
+      const publicAuthPages = ['/login', '/register'];
+      if (!publicAuthPages.includes(window.location.pathname)) {
+        window.location.href = '/login';
+      }
+      return Promise.reject(refreshError);
+    }
   }
 );
 

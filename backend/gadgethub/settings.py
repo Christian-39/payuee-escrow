@@ -186,14 +186,30 @@ SIMPLE_JWT = {
 # accounts/authentication.py, accounts/views.py) instead of being returned
 # in the JSON body and stored in localStorage - a JS-readable/writable
 # localStorage token is trivially exfiltrated by any XSS on the page;
-# httpOnly cookies aren't readable from JS at all. Because the frontend
-# (a different origin from the API - see CORS_ALLOWED_ORIGINS) needs the
-# browser to attach these cookies cross-site, they must use
-# SameSite=None; Secure in production, which in turn means the API is now
-# protected by an explicit double-submit CSRF cookie (see
-# accounts/authentication.py) rather than relying on SameSite alone.
-AUTH_COOKIE_SECURE = config('AUTH_COOKIE_SECURE', default=not DEBUG, cast=bool)
-AUTH_COOKIE_SAMESITE = config('AUTH_COOKIE_SAMESITE', default='None' if not DEBUG else 'Lax')
+# httpOnly cookies aren't readable from JS at all.
+#
+# IMPORTANT - do not derive these from DEBUG: DEBUG defaults to False in
+# this project (see above), which is an easy, silent trap for this
+# specific pair of settings. A `Secure` cookie is refused by every browser
+# over plain http - if AUTH_COOKIE_SECURE ends up True while the app is
+# actually being served over http (e.g. local `runserver`/Vite dev with
+# DEBUG left at its False default, or a staging box without TLS yet), the
+# browser drops the Set-Cookie for access/refresh/csrf entirely and
+# *every* request looks unauthenticated - which is exactly the symptom of
+# "profile/refresh 401-loop, can't add to cart, can't upload, login page
+# keeps reloading": there was never a valid session cookie for the browser
+# to send, on any request, from the moment login. Both flags below must be
+# set explicitly and intentionally, matching how the app is actually being
+# served right now (not "will eventually be served in prod"):
+#   - Local http dev (runserver / Vite dev server, no TLS): leave both at
+#     their defaults below (Secure=False, SameSite=Lax).
+#   - Real HTTPS deployment with frontend and API on different origins:
+#     set AUTH_COOKIE_SECURE=True and AUTH_COOKIE_SAMESITE=None in that
+#     environment's env vars - SameSite=None additionally requires
+#     Secure=True or browsers reject the cookie outright, so these two
+#     must always be changed together.
+AUTH_COOKIE_SECURE = config('AUTH_COOKIE_SECURE', default=False, cast=bool)
+AUTH_COOKIE_SAMESITE = config('AUTH_COOKIE_SAMESITE', default='Lax')
 AUTH_COOKIE_DOMAIN = config('AUTH_COOKIE_DOMAIN', default=None)
 
 # CORS Configuration
@@ -203,6 +219,20 @@ CORS_ALLOWED_ORIGINS = config(
 ).split(',')
 
 CORS_ALLOW_CREDENTIALS = True
+
+# django-cors-headers' default CORS_ALLOW_HEADERS does NOT include custom
+# headers - it only allows a fixed standard set (accept, authorization,
+# content-type, etc.). The X-CSRF-Token header (see
+# accounts/authentication.py / frontend lib/api.ts) is a custom header,
+# so without explicitly whitelisting it here, the browser's CORS
+# preflight (OPTIONS) rejects it and blocks every cross-origin POST/PUT/
+# PATCH/DELETE outright before it ever reaches Django - this is what was
+# actually breaking add-to-cart, wishlist, and profile image upload (all
+# non-GET requests), independent of the login-redirect-loop bug fixed in
+# lib/api.ts. Must list the full set explicitly since setting this at all
+# replaces django-cors-headers' default list rather than extending it.
+from corsheaders.defaults import default_headers as _cors_default_headers
+CORS_ALLOW_HEADERS = list(_cors_default_headers) + ['x-csrf-token']
 
 # Payuee API Configuration
 PAYUEE_API_KEY = config('PAYUEE_API_KEY')
