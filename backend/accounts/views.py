@@ -6,7 +6,11 @@ Handles user authentication, registration, and profile management.
 from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import TokenError
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
@@ -19,13 +23,108 @@ from .serializers import (
     CustomTokenObtainPairSerializer,
     SetPayueePinSerializer
 )
+from .authentication import CSRF_COOKIE_NAME, generate_csrf_token
 
 User = get_user_model()
 
+ACCESS_COOKIE = settings.SIMPLE_JWT.get('AUTH_COOKIE_ACCESS', 'access_token')
+REFRESH_COOKIE = settings.SIMPLE_JWT.get('AUTH_COOKIE_REFRESH', 'refresh_token')
+
+
+def _cookie_kwargs(max_age, http_only):
+    """Shared cookie flags. SameSite=None (needed for the cross-origin
+    frontend<->API setup - see accounts/authentication.py docstring) only
+    works if Secure is also set, which is why AUTH_COOKIE_SECURE defaults
+    to True outside DEBUG."""
+    kwargs = {
+        'max_age': max_age,
+        'httponly': http_only,
+        'secure': settings.AUTH_COOKIE_SECURE,
+        'samesite': settings.AUTH_COOKIE_SAMESITE,
+        'path': '/',
+    }
+    if settings.AUTH_COOKIE_DOMAIN:
+        kwargs['domain'] = settings.AUTH_COOKIE_DOMAIN
+    return kwargs
+
+
+def _set_auth_cookies(response, access, refresh=None):
+    access_lifetime = int(settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds())
+    response.set_cookie(ACCESS_COOKIE, str(access), **_cookie_kwargs(access_lifetime, http_only=True))
+
+    if refresh is not None:
+        refresh_lifetime = int(settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds())
+        response.set_cookie(REFRESH_COOKIE, str(refresh), **_cookie_kwargs(refresh_lifetime, http_only=True))
+
+    # Non-httpOnly on purpose: the frontend JS must be able to read this
+    # one to echo it back in the X-CSRF-Token header (double-submit
+    # pattern - see accounts/authentication.py).
+    response.set_cookie(
+        CSRF_COOKIE_NAME, generate_csrf_token(),
+        **_cookie_kwargs(int(settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds()), http_only=False)
+    )
+    return response
+
+
+def _clear_auth_cookies(response):
+    for name in (ACCESS_COOKIE, REFRESH_COOKIE, CSRF_COOKIE_NAME):
+        response.delete_cookie(name, path='/', domain=settings.AUTH_COOKIE_DOMAIN)
+    return response
+
 
 class CustomTokenObtainPairView(TokenObtainPairView):
-    """Custom login view that returns user data with tokens."""
+    """Login view. Tokens are set as httpOnly cookies rather than returned
+    in the response body (see module docstring / accounts/authentication.py)."""
     serializer_class = CustomTokenObtainPairSerializer
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            access = response.data.pop('access', None)
+            refresh = response.data.pop('refresh', None)
+            _set_auth_cookies(response, access, refresh)
+        return response
+
+
+class CookieTokenRefreshView(TokenRefreshView):
+    """Refresh view that reads the refresh token from the httpOnly cookie
+    instead of requiring it in the request body, and writes the rotated
+    tokens back as cookies."""
+
+    def post(self, request, *args, **kwargs):
+        refresh_token = request.COOKIES.get(REFRESH_COOKIE)
+        if not refresh_token:
+            return Response({'detail': 'No refresh token cookie.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        request.data['refresh'] = refresh_token
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            access = response.data.pop('access', None)
+            # ROTATE_REFRESH_TOKENS=True means a new refresh token comes
+            # back too; without re-setting the cookie here, the client
+            # would keep sending the now-blacklisted original refresh
+            # token on every subsequent refresh and get logged out.
+            new_refresh = response.data.pop('refresh', None)
+            _set_auth_cookies(response, access, new_refresh)
+        return response
+
+
+class LogoutView(APIView):
+    """Blacklists the current refresh token (now that
+    rest_framework_simplejwt.token_blacklist is installed - see
+    settings.py) and clears all auth cookies."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        refresh_token = request.COOKIES.get(REFRESH_COOKIE)
+        if refresh_token:
+            try:
+                RefreshToken(refresh_token).blacklist()
+            except TokenError:
+                pass  # already invalid/expired - nothing to blacklist
+
+        response = Response({'message': 'Logged out successfully.'}, status=status.HTTP_200_OK)
+        return _clear_auth_cookies(response)
 
 
 class UserRegistrationView(generics.CreateAPIView):

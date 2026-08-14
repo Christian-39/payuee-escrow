@@ -200,10 +200,16 @@ class Order(models.Model):
     shipping_latitude = models.FloatField(blank=True, null=True)
     shipping_longitude = models.FloatField(blank=True, null=True)
 
-    # Customer-known transaction code for the Payuee escrow order (per
-    # Payuee docs this must be something the customer entered/knows, never
-    # silently auto-generated). Verified against the user's hashed Payuee
-    # PIN (see User.check_payuee_pin) before the order is placed.
+    # DEPRECATED / WRITE-DISABLED: this used to store the customer's raw
+    # 6-digit Payuee transaction PIN in plaintext, which is a security
+    # issue (the PIN is already correctly hashed on
+    # User.payuee_transaction_pin_hash - it never needed a second, unhashed
+    # copy here). `orders/views.py` no longer writes to this field; the PIN
+    # is verified via User.check_payuee_pin() and passed to Payuee in
+    # memory only, never persisted on the Order. Field is kept (rather than
+    # dropped) to avoid a destructive migration on an existing table -
+    # existing rows may still contain plaintext PINs from before this fix
+    # and should be nulled out via a data-migration/backfill.
     trans_code = models.CharField(max_length=6, blank=True, null=True)
     
     class Meta:

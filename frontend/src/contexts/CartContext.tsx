@@ -5,6 +5,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'; // ← Add useCallback
 import { toast } from 'sonner';
 import api from '../lib/api';
+import { useAuth } from './AuthContext';
 import type { Cart, CartItem } from '../types';
 
 interface CartContextType {
@@ -23,6 +24,7 @@ const CartContext = createContext<CartContextType | undefined>(undefined);
 export function CartProvider({ children }: { children: React.ReactNode }) {
   const [cart, setCart] = useState<Cart | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const { isAuthenticated } = useAuth();
 
   // ✅ WRAPPED IN useCallback - stable reference
   const refreshCart = useCallback(async () => {
@@ -34,13 +36,20 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     }
   }, []); // ← Empty deps = never recreates
 
-  // Fetch cart on mount if user is authenticated
+  // Fetch cart whenever auth state resolves to "logged in". This used to
+  // check `localStorage.getItem('access_token')`, which no longer exists
+  // now that auth lives in an httpOnly cookie (see AuthContext.tsx) - that
+  // check was always false, so the cart silently never loaded on mount.
+  // Depending on `isAuthenticated` from AuthContext also fixes a second,
+  // separate bug: previously this only ran once on initial mount, so
+  // logging in without a full page reload never re-fetched the cart either.
   useEffect(() => {
-    const token = localStorage.getItem('access_token');
-    if (token) {
+    if (isAuthenticated) {
       refreshCart();
+    } else {
+      setCart(null);
     }
-  }, [refreshCart]); // ← Now safe to include
+  }, [isAuthenticated, refreshCart]);
 
   // ✅ WRAPPED IN useCallback
   const addToCart = useCallback(async (productId: string, quantity: number = 1) => {

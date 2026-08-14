@@ -260,23 +260,32 @@ def checkout(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Calculate totals
+        # Keep the PIN in memory only for this request - it is verified
+        # above against the hashed value on the user and must never be
+        # persisted in plaintext on the Order (see orders/models.py).
+        trans_code = data['trans_code']
+
+        # Calculate totals. shipping_cost starts at 0 and is filled in
+        # below, inside the transaction, once we have the real per-vendor
+        # fee(s) from Payuee's /v1/order/shipping-fees. Placing an order
+        # with shipping_cost hardcoded to 0 meant the amount shown/charged
+        # locally could diverge from what Payuee actually locks in escrow.
         subtotal = sum(item.total_price for item in cart_items)
-        shipping_cost = 0
-        tax = subtotal * Decimal('0.08')
+        shipping_cost = Decimal('0')
         discount = 0
-        total = subtotal + shipping_cost + tax - discount
-        logger.info(f"Total: {total}")
+        logger.info(f"Subtotal: {subtotal}")
 
         with transaction.atomic():
-            # Create order
+            # Create order. total/tax are finalized after the real Payuee
+            # shipping fee is known (see below) - order.save() is called
+            # again once shipping_cost is resolved.
             order = Order.objects.create(
                 user=request.user,
                 subtotal=subtotal,
                 shipping_cost=shipping_cost,
-                tax=tax,
+                tax=subtotal * Decimal('0.08'),
                 discount=discount,
-                total=total,
+                total=subtotal + subtotal * Decimal('0.08') - discount,
                 currency='USD',
                 shipping_name=data['shipping_name'],
                 shipping_address=data['shipping_address'],
@@ -287,7 +296,6 @@ def checkout(request):
                 shipping_phone=data['shipping_phone'],
                 shipping_latitude=data['shipping_latitude'],
                 shipping_longitude=data['shipping_longitude'],
-                trans_code=data['trans_code'],
                 customer_note=data.get('customer_note', ''),
                 idempotency_key=str(uuid.uuid4())
             )
@@ -353,10 +361,24 @@ def checkout(request):
                     else:
                         shipping_array = shipping_result['data'].get('shipping', [])
 
+                        # Reconcile the local order total with the real,
+                        # server-validated shipping fee(s) Payuee just
+                        # quoted, BEFORE placing the escrow order - this was
+                        # previously hardcoded to 0, so the amount shown to
+                        # the customer and stored locally never matched
+                        # what Payuee actually locked in escrow.
+                        real_shipping_cost = sum(
+                            Decimal(str(leg.get('fee', 0))) for leg in shipping_array
+                        )
+                        order.shipping_cost = real_shipping_cost
+                        order.tax = order.subtotal * Decimal('0.08')
+                        order.total = order.subtotal + order.shipping_cost + order.tax - order.discount
+                        order.save(update_fields=['shipping_cost', 'tax', 'total'])
+
                         payuee_result = payuee_client.create_order(
                             order,
                             payuee_items,
-                            trans_code=order.trans_code,
+                            trans_code=trans_code,
                             shipping=shipping_array,
                             customer_latitude=customer_lat,
                             customer_longitude=customer_lon,
@@ -458,6 +480,13 @@ def get_order_summary(request):
         )
     
     subtotal = sum(item.total_price for item in cart_items)
+    # NOTE: shipping_cost here is a placeholder, not the real Payuee fee -
+    # the real per-vendor fee is only knowable once a delivery
+    # state/city/lat/lon is chosen (via /v1/order/shipping-fees), which
+    # this pre-checkout summary doesn't have. The final, authoritative
+    # total is computed and persisted in checkout() using the real Payuee
+    # shipping quote before the escrow order is created - this endpoint is
+    # for display estimation only and callers must not treat it as final.
     shipping_cost = 0
     tax = subtotal * Decimal(0.08)
     discount = 0
@@ -466,6 +495,7 @@ def get_order_summary(request):
     summary = {
         'subtotal': subtotal,
         'shipping_cost': shipping_cost,
+        'shipping_cost_is_estimate': True,
         'tax': tax,
         'discount': discount,
         'total': total,
@@ -598,7 +628,16 @@ def cancel_order(request, order_number):
 
     if order.payuee_order_id:
         payuee_client = PayueeClient()
-        result = payuee_client.cancel_order(order.payuee_order_id, trans_code, report_note)
+        # Deterministic idempotency key tied to this order's cancellation -
+        # without this, each call (e.g. a double-click or a client retry
+        # after a dropped response) generated a fresh random key, so Payuee
+        # had no way to recognize a duplicate cancel request as the same
+        # operation.
+        cancel_idempotency_key = f"cancel-{order.id}"
+        result = payuee_client.cancel_order(
+            order.payuee_order_id, trans_code, report_note,
+            idempotency_key=cancel_idempotency_key,
+        )
         if not result.get('success'):
             return Response(
                 {'error': result.get('error', 'Failed to cancel order with Payuee.')},

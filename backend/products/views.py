@@ -555,22 +555,34 @@ class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
 @permission_classes([permissions.AllowAny])
 def get_categories_with_products(request):
     """Get categories with their products for homepage."""
-    categories = Category.objects.filter(
+    categories = list(Category.objects.filter(
         is_active=True,
         parent=None
-    )[:6]
-    
+    )[:6])
+
+    # Previously this ran one Product query per category (N+1 - 6 extra
+    # queries on every homepage load). Fetch all candidate products for
+    # all 6 categories in a single query, then group/cap to 4-per-category
+    # in Python.
+    category_ids = [c.id for c in categories]
+    products_by_category = {cid: [] for cid in category_ids}
+
+    all_products = Product.objects.filter(
+        category_id__in=category_ids,
+        status='active'
+    ).select_related('category').order_by('category_id', '-created_at')
+
+    for product in all_products:
+        bucket = products_by_category.get(product.category_id)
+        if bucket is not None and len(bucket) < 4:
+            bucket.append(product)
+
     result = []
     for category in categories:
-        products = Product.objects.filter(
-            category=category,
-            status='active'
-        ).select_related('category')[:4]
-        
         result.append({
             'category': CategorySerializer(category).data,
             'products': ProductListSerializer(
-                products, 
+                products_by_category[category.id],
                 many=True,
                 context={'request': request}
             ).data

@@ -311,14 +311,22 @@ class PayueeClient:
 
         NOTE: Payuee's own documentation is internally inconsistent here - the
         prose describes the path as `/v1/product/{id}` (singular) but the
-        example curl request hits `/v1/products/{id}` (plural). This client
-        uses the documented (singular) path since that's the authoritative
-        contract text; if Payuee's live API actually expects the plural form,
-        update PRODUCT_DETAIL_PATH below (verify against a real account
-        before relying on this in production).
+        example curl request hits `/v1/products/{id}` (plural). Rather than
+        hard-committing to one and silently 404ing in production if Payuee's
+        live API actually expects the other, this tries the documented
+        (singular) path first and falls back to the plural form only on a
+        404 - a non-mutating GET, so retrying with an alternate path is
+        safe. Whichever path actually succeeds should be confirmed against
+        a real account and this fallback simplified/removed once verified.
         """
-        path = f'/v1/product/{product_id}'
-        return self.make_request('GET', path)
+        result = self.make_request('GET', f'/v1/product/{product_id}')
+        if not result.get('success') and result.get('status_code') == 404:
+            logger.info(
+                f"GET /v1/product/{product_id} returned 404 - retrying plural "
+                f"path /v1/products/{product_id} (see docstring)."
+            )
+            result = self.make_request('GET', f'/v1/products/{product_id}')
+        return result
 
     # ------------------------------------------------------------------
     # Wallet
@@ -483,12 +491,21 @@ class PayueeClient:
             'report_note': report_note,
         })
 
-    def cancel_order(self, order_id, trans_code: str, report_note: str = '') -> Dict[str, Any]:
-        """POST /v1/order/cancel"""
+    def cancel_order(self, order_id, trans_code: str, report_note: str = '',
+                      idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        """POST /v1/order/cancel
+
+        `idempotency_key` should be deterministic per-order (e.g.
+        f"cancel-{order.id}") so a duplicate submission (double-click,
+        dropped-response retry) is recognized by Payuee as the same
+        request instead of being processed twice. If omitted, make_request
+        falls back to a random key, which does NOT protect against
+        duplicate cancel calls.
+        """
         data = {'order_id': order_id, 'trans_code': trans_code}
         if report_note:
             data['report_note'] = report_note
-        return self.make_request('POST', '/v1/order/cancel', data)
+        return self.make_request('POST', '/v1/order/cancel', data, idempotency_key=idempotency_key)
 
     # ------------------------------------------------------------------
     # Reviews

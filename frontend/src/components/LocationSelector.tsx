@@ -25,7 +25,7 @@ export default function LocationSelector({ onSelect, className }: LocationSelect
     selectedCity,
     loadingStates,
     loadingCities,
-    error,
+    locationError,
     setSelectedState,
     setSelectedCity,
   } = usePayueeLocation();
@@ -51,9 +51,9 @@ export default function LocationSelector({ onSelect, className }: LocationSelect
 
   return (
     <div className={cn('space-y-4', className)}>
-      {error && (
+      {locationError && (
         <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm rounded-xl">
-          {error}
+          {locationError}
         </div>
       )}
 
@@ -151,7 +151,12 @@ export default function LocationSelector({ onSelect, className }: LocationSelect
               exit={{ opacity: 0, y: -10 }}
               className="absolute z-50 w-full mt-2 max-h-60 overflow-y-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg"
             >
-              {cities.map((city, index) => (
+              {cities.length === 0 && !loadingCities ? (
+                <div className="px-4 py-3 text-sm text-gray-400">
+                  No delivery areas found for this state.
+                </div>
+              ) : (
+                cities.map((city, index) => (
                 <button
                   key={`${city.city}-${city.ward}-${index}`}
                   onClick={() => handleCitySelect(city)}
@@ -165,7 +170,8 @@ export default function LocationSelector({ onSelect, className }: LocationSelect
                     {city.latitude.toFixed(4)}, {city.longitude.toFixed(4)}
                   </div>
                 </button>
-              ))}
+                ))
+              )}
             </motion.div>
           )}
         </AnimatePresence>

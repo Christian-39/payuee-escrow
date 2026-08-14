@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     # Third-party apps
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'storages',
     
@@ -131,7 +132,7 @@ AUTH_USER_MODEL = 'accounts.User'
 # Django REST Framework Configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'accounts.authentication.CookieJWTAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -142,6 +143,17 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
+    # Payuee's own security guidance explicitly recommends rate-limiting
+    # the order-creation endpoint; previously nothing here was throttled
+    # at all (login, checkout, order/create all wide open).
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '60/min',
+        'user': '120/min',
+    },
 }
 
 # JWT Configuration
@@ -153,7 +165,36 @@ SIMPLE_JWT = {
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
     'UPDATE_LAST_LOGIN': True,
+    'AUTH_COOKIE_ACCESS': 'access_token',
+    'AUTH_COOKIE_REFRESH': 'refresh_token',
 }
+# BLACKLIST_AFTER_ROTATION above was already set to True, but
+# 'rest_framework_simplejwt.token_blacklist' was never added to
+# INSTALLED_APPS (added above) - without it, simplejwt has no
+# OutstandingToken/BlacklistedToken models to blacklist against, and
+# every refresh-token rotation raises instead of quietly rotating. This
+# is very likely the actual cause of "user logs out whenever the page
+# refreshes / gets logged back in inconsistently": the very first token
+# refresh after login would fail server-side, the frontend would treat
+# that as a fully-expired session and clear auth state, and then
+# sometimes silently log back in only because a still-valid access token
+# happened to still be sitting in localStorage. Run
+# `python manage.py migrate` after this change to create the blacklist
+# tables.
+#
+# Auth tokens are now delivered as httpOnly cookies (see
+# accounts/authentication.py, accounts/views.py) instead of being returned
+# in the JSON body and stored in localStorage - a JS-readable/writable
+# localStorage token is trivially exfiltrated by any XSS on the page;
+# httpOnly cookies aren't readable from JS at all. Because the frontend
+# (a different origin from the API - see CORS_ALLOWED_ORIGINS) needs the
+# browser to attach these cookies cross-site, they must use
+# SameSite=None; Secure in production, which in turn means the API is now
+# protected by an explicit double-submit CSRF cookie (see
+# accounts/authentication.py) rather than relying on SameSite alone.
+AUTH_COOKIE_SECURE = config('AUTH_COOKIE_SECURE', default=not DEBUG, cast=bool)
+AUTH_COOKIE_SAMESITE = config('AUTH_COOKIE_SAMESITE', default='None' if not DEBUG else 'Lax')
+AUTH_COOKIE_DOMAIN = config('AUTH_COOKIE_DOMAIN', default=None)
 
 # CORS Configuration
 CORS_ALLOWED_ORIGINS = config(
@@ -172,6 +213,21 @@ WEBHOOK_SECRET = config('WEBHOOK_SECRET', default='')
 PAYUEE_WEBHOOK_URL = config('PAYUEE_WEBHOOK_URL', default='')
 
 # Backblaze B2 Configuration
+#
+# AWS_DEFAULT_ACL = 'public-read' review/confirmation: the only thing this
+# app actually stores in B2 is user-uploaded profile images
+# (accounts/views.py::upload_profile_image, path `profiles/<user_id>/
+# <uuid>.<ext>`) - product images (`featured_image`) are plain URLField
+# links to Payuee's own CDN and never touch B2 at all. Public-read is the
+# correct, intended setting here: profile pictures are displayed via plain
+# <img src> tags (no signed-URL infrastructure exists, and
+# AWS_QUERYSTRING_AUTH=False below confirms that's deliberate), so making
+# the bucket private would just break avatar display without adding any
+# real protection - filenames are namespaced by a random UUID (not
+# sequential/enumerable), so this is equivalent in practice to how most
+# public-avatar-hosting apps work. If per-user private images are ever
+# needed for a different upload type in the future, that should get its
+# own non-public path/bucket rather than changing this default globally.
 AWS_ACCESS_KEY_ID = config('B2_KEY_ID', default='')
 AWS_SECRET_ACCESS_KEY = config('B2_APPLICATION_KEY', default='')
 AWS_STORAGE_BUCKET_NAME = config('B2_BUCKET_NAME', default='')
@@ -205,6 +261,20 @@ CELERY_RESULT_BACKEND = config('REDIS_URL', default='redis://localhost:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+
+# Periodic tasks (requires a separate `celery beat` process running - see
+# Procfile). Replaces the old products/scheduler.py `threading` loop:
+# beat guarantees a single dispatch on schedule regardless of how many web
+# or worker processes are running, instead of every process running its
+# own independent in-memory timer.
+CELERY_BEAT_SCHEDULE = {
+    'sync-payuee-products-every-5-hours': {
+        'task': 'products.sync_payuee_products',
+        'schedule': 5 * 60 * 60,  # seconds
+        'kwargs': {'max_pages': 5, 'category': 'all'},
+    },
+}
 
 # Logging Configuration
 LOGGING = {
@@ -228,6 +298,24 @@ LOGGING = {
 SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=False, cast=bool)
 SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=False, cast=bool)
 CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=False, cast=bool)
+SESSION_COOKIE_SAMESITE = config('SESSION_COOKIE_SAMESITE', default='Lax')
+CSRF_COOKIE_SAMESITE = config('CSRF_COOKIE_SAMESITE', default='Lax')
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
+
+# Required when SECURE_SSL_REDIRECT is on behind a reverse proxy/load
+# balancer (e.g. Render) that terminates TLS itself and forwards plain
+# HTTP internally - without this, Django can't tell the original request
+# was HTTPS and will redirect-loop.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Cross-origin POSTs (admin actions, checkout, etc.) from the deployed
+# frontend need their origin explicitly trusted for Django's CSRF checks
+# to pass in production - previously unset, so this defaulted to allowing
+# none, which silently breaks any cookie/CSRF-based flow (JWT-only API
+# calls in this app already sidestep it, but Django admin does not).
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='http://localhost:5173,http://127.0.0.1:5173'
+).split(',')

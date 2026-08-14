@@ -4,9 +4,11 @@ djangorestframework>=3.14.0
 django-cors-headers>=4.3.0
 
 # Database
-psycopg2-binary>=2.9.9
+# Only PyMySQL is needed - settings.py calls pymysql.install_as_MySQLdb()
+# to use it as the MySQLdb driver. psycopg2-binary (Postgres) and
+# mysqlclient (a second, competing MySQL driver) were leftover from an
+# earlier Postgres-> MySQL migration and were never actually used.
 PyMySQL==1.1.2
-mysqlclient==2.2.8
 
 # Authentication
 djangorestframework-simplejwt>=5.3.0

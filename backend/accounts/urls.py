@@ -3,10 +3,10 @@ URL configuration for the accounts app.
 """
 
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
-
 from .views import (
     CustomTokenObtainPairView,
+    CookieTokenRefreshView,
+    LogoutView,
     UserRegistrationView,
     UserProfileView,
     UserProfileUpdateView,
@@ -20,7 +20,8 @@ from .views import (
 urlpatterns = [
     # Authentication
     path('login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('refresh/', CookieTokenRefreshView.as_view(), name='token_refresh'),
+    path('logout/', LogoutView.as_view(), name='logout'),
     path('register/', UserRegistrationView.as_view(), name='register'),
     
     # Profile

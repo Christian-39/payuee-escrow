@@ -67,32 +67,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(userData);
     } catch (error) {
       // Both access and refresh tokens are completely invalid/expired
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
-      setUser(null); // ✅ Reset state explicitly to clear out stale context data
+      // (or absent) - nothing to clear client-side anymore, since auth
+      // now lives in httpOnly cookies the API itself manages.
+      setUser(null);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
-  // Check for existing token on mount
+  // On mount, there's no client-readable token to check anymore (it's an
+  // httpOnly cookie) - the only way to know if a session exists is to ask
+  // the API. `withCredentials: true` (see lib/api.ts) means the httpOnly
+  // cookie, if any, is sent automatically; a 401 here just means "not
+  // logged in", which refreshUser already handles by setting user: null.
   useEffect(() => {
-    const token = localStorage.getItem('access_token');
-    if (token) {
-      refreshUser();
-    } else {
-      setIsLoading(false);
-    }
+    refreshUser();
   }, [refreshUser]);
 
   const login = async (email: string, password: string) => {
     try {
       const response = await api.post('/auth/login/', { email, password });
-      const { access, refresh, user: loggedInUser } = response.data;
-      
-      localStorage.setItem('access_token', access);
-      localStorage.setItem('refresh_token', refresh);
-      
+      // Tokens are no longer in the response body - the API sets them as
+      // httpOnly cookies directly on this response. Only `user` remains.
+      const { user: loggedInUser } = response.data;
+
       setUser(loggedInUser);
       toast.success('Welcome back!');
       
@@ -122,8 +120,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = useCallback(() => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
+    // Fire-and-forget: tells the API to blacklist the refresh token and
+    // clear the httpOnly cookies. Client state is cleared immediately
+    // either way so the UI doesn't wait on the network round-trip.
+    api.post('/auth/logout/').catch(() => {
+      // Even if this fails (e.g. already logged out / network hiccup),
+      // proceed with clearing local state below - there's nothing further
+      // to clean up client-side since no token is stored in JS anymore.
+    });
     setUser(null);
     toast.success('Logged out successfully');
     navigate('/login');

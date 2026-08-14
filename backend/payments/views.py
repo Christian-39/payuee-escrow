@@ -131,6 +131,41 @@ class AdminTransactionDetailView(generics.RetrieveAPIView):
 # Payuee Location Proxy Views
 # ------------------------------------------------------------------
 
+def _normalize_payuee_list_payload(raw, list_key):
+    """
+    Normalize a Payuee list-style response into the shape the frontend
+    actually expects: {"success": true, "<list_key>": [...]}.
+
+    Root cause of "cities dropdown never opens after selecting a state":
+    Payuee's API (same as /v1/products - see
+    payments/payuee_client.py::get_all_store_products, which already works
+    around this) confusingly returns the payload array itself under a
+    literal "success" key, e.g. {"success": [...states or cities...]},
+    NOT a boolean success flag alongside a "states"/"cities" key. These two
+    views were forwarding that raw shape straight through
+    (`Response(data, ...)`), so on the frontend
+    (usePayueeLocation.fetchCities) `response.data.success` happened to be
+    a truthy non-empty array (so no error surfaced) but
+    `response.data.cities` was always undefined - the cities list state
+    was set to `[]` every time, so the dropdown opened with zero rows and
+    looked like it "wasn't dropping down". States can appear to work if
+    Payuee's states payload additionally happens to include a `states` key
+    another way, but the two endpoints must not be assumed to differ -
+    this normalizer future-proofs both against whichever exact shape
+    Payuee actually returns.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for key in (list_key, 'success', 'data', 'results'):
+            value = raw.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
 class PayueeLocationStatesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -140,12 +175,12 @@ class PayueeLocationStatesView(APIView):
         logger.debug(f"Payuee states response: {result}")
 
         if result.get('success'):
-            data = result.get('data') or []
-            return Response(data, status=status.HTTP_200_OK)
+            states = _normalize_payuee_list_payload(result.get('data'), 'states')
+            return Response({'success': True, 'states': states}, status=status.HTTP_200_OK)
 
         logger.error(f"Payuee states failed: {result}")
         return Response(
-            {'error': result.get('error', 'Failed to fetch states')},
+            {'success': False, 'error': result.get('error', 'Failed to fetch states')},
             status=result.get('status_code', status.HTTP_502_BAD_GATEWAY)
         )
 
@@ -157,7 +192,7 @@ class PayueeLocationCitiesView(APIView):
         state = request.query_params.get('state')
         if not state:
             return Response(
-                {'error': 'state query parameter is required'},
+                {'success': False, 'error': 'state query parameter is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -166,13 +201,12 @@ class PayueeLocationCitiesView(APIView):
         logger.debug(f"Payuee cities response for state={state}: {result}")
 
         if result.get('success'):
-            # Defensive: never return None to the frontend
-            data = result.get('data') or []
-            return Response(data, status=status.HTTP_200_OK)
+            cities = _normalize_payuee_list_payload(result.get('data'), 'cities')
+            return Response({'success': True, 'cities': cities}, status=status.HTTP_200_OK)
 
         logger.error(f"Payuee cities failed: {result}")
         return Response(
-            {'error': result.get('error', 'Failed to fetch cities')},
+            {'success': False, 'error': result.get('error', 'Failed to fetch cities')},
             status=result.get('status_code', status.HTTP_502_BAD_GATEWAY)
         )
 

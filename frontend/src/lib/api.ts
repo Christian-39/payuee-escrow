@@ -5,10 +5,7 @@
 import axios from 'axios';
 
 // NOTE: must match the var name actually set in .env / .env.production
-// (VITE_API_BASE_URL) - this previously read VITE_API_URL, which is never
-// set, so every axios request silently fell back to localhost:8000 even in
-// production builds. That's the root cause of "products/API endpoints not
-// fetching" once deployed.
+// (VITE_API_BASE_URL).
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
 
 const api = axios.create({
@@ -16,14 +13,32 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  // Auth now travels as httpOnly cookies set by the API (see
+  // accounts/views.py) instead of an Authorization header built from a
+  // token in localStorage - `withCredentials` is what makes the browser
+  // actually attach those cookies on cross-origin requests to the API.
+  withCredentials: true,
 });
 
-// Request interceptor - add auth token
+function readCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+// Request interceptor - attach the CSRF double-submit header for unsafe
+// methods. The access/refresh JWTs themselves are httpOnly (unreadable
+// from JS, and sent automatically by the browser via withCredentials) -
+// only the separate, non-httpOnly `csrf_token` cookie is readable here,
+// by design (see accounts/authentication.py for why this is needed on
+// top of httpOnly cookies).
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('access_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+    const method = (config.method || 'get').toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      const csrfToken = readCookie('csrf_token');
+      if (csrfToken) {
+        config.headers['X-CSRF-Token'] = csrfToken;
+      }
     }
     return config;
   },
@@ -43,25 +58,19 @@ api.interceptors.response.use(
       originalRequest._retry = true;
 
       try {
-        const refreshToken = localStorage.getItem('refresh_token');
-        if (!refreshToken) {
-          throw new Error('No refresh token');
-        }
+        // No body needed - the refresh token is read straight from its
+        // own httpOnly cookie server-side. A successful response sets
+        // fresh access/refresh/csrf cookies automatically; there's
+        // nothing to store here.
+        await axios.post(`${API_BASE_URL}/auth/refresh/`, {}, { withCredentials: true });
 
-        const response = await axios.post(`${API_BASE_URL}/auth/refresh/`, {
-          refresh: refreshToken,
-        });
-
-        const { access } = response.data;
-        localStorage.setItem('access_token', access);
-
-        // Retry original request with new token
-        originalRequest.headers.Authorization = `Bearer ${access}`;
+        // Retry the original request - the new access-token cookie will
+        // be attached automatically via withCredentials.
         return api(originalRequest);
       } catch (refreshError) {
-        // Refresh failed, logout user
-        localStorage.removeItem('access_token');
-        localStorage.removeItem('refresh_token');
+        // Refresh failed (refresh cookie missing/expired/blacklisted) -
+        // the API has already cleared any stale cookies it could; just
+        // reflect that in app state and send the user to log in again.
         window.location.href = '/login';
         return Promise.reject(refreshError);
       }
